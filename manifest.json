@@ -1,0 +1,12 @@
+{
+    "display_name": "星空 · Celestial Background",
+    "loading_order": 1,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "celestial-theme",
+    "version": "2.0.0",
+    "homePage": "https://github.com/你的用户名/celestial-st",
+    "auto_update": true
+}
