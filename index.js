@@ -150,11 +150,31 @@
         let LAT=39.9, LON=116.4, loc='北京';
 
         if(navigator.geolocation){
-            navigator.geolocation.getCurrentPosition(
-                p=>{LAT=p.coords.latitude;LON=p.coords.longitude;loc=`${LAT.toFixed(1)}°N`;},
-                ()=>{}
-            );
+    navigator.geolocation.getCurrentPosition(
+        p=>{LAT=p.coords.latitude;LON=p.coords.longitude;loc=`${LAT.toFixed(1)}°N`;},
+        ()=>{
+            // 浏览器定位失败，改用 IP 定位
+            fetch('https://ipapi.co/json/')
+                .then(r=>r.json())
+                .then(d=>{
+                    LAT=d.latitude;
+                    LON=d.longitude;
+                    loc=d.city||`${LAT.toFixed(1)}°N`;
+                })
+                .catch(()=>{}); // 都失败就保持默认
         }
+    );
+} else {
+    // 浏览器不支持定位，直接用 IP
+    fetch('https://ipapi.co/json/')
+        .then(r=>r.json())
+        .then(d=>{
+            LAT=d.latitude;
+            LON=d.longitude;
+            loc=d.city||`${LAT.toFixed(1)}°N`;
+        })
+        .catch(()=>{});
+}
 
         function resize(){
             W=canvas.width=window.innerWidth;
