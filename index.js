@@ -162,14 +162,14 @@
             bgStars=Array.from({length:Math.floor(W*H/1800)},()=>({
                 x:Math.random()*W, y:Math.random()*H,
                 r:Math.random()*0.9+0.15,
-                a:Math.random()*0.40+0.08,
+                a:Math.random()*0.55+0.15,
                 tw:Math.random()*Math.PI*2,
                 spd:Math.random()*0.007+0.002,
             }));
         }
 
-        const starR   = mag => Math.max(0.5, 3.2-mag*0.50);
-        const starAlp = mag => Math.max(0.22, Math.min(0.96, 1.05-mag*0.12));
+        const starR   = mag => Math.max(0.8, 4.0-mag*0.55);
+        const starAlp = mag => Math.max(0.45, Math.min(1.0, 1.2-mag*0.10));
 
         function draw(){
             frame++;
