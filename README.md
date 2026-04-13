@@ -11,19 +11,10 @@
 1. 打开 SillyTavern
 2. 点顶栏的 **积木图标**（扩展）
 3. 点 **「Install extension」（安装扩展）**
-4. 粘贴此仓库地址：
-   ```
-   https://github.com/你的用户名/celestial-st
-   ```
+4. 粘贴此仓库地址
 5. 点安装，完成后**刷新页面**
 6. 进扩展页面确认 **「星空 · Celestial Background」** 已启用 ✓
 
----
-
-## 主题 CSS（可选）
-
-如果你还想要深空黑色界面风格，把 `celestial-v5.css` 的内容粘贴到：  
-**用户设置 → 往下滚 → Custom CSS → 粘贴 → 保存**
 
 ---
 
