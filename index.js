@@ -9,10 +9,6 @@
 ```
 if (document.getElementById('celestial-canvas')) return;
 
-// ── 设备判断
-const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-              || window.innerWidth < 768;
-
 const STARS = [
     { ra:5.242,  dec:-8.202,  mag:0.18,  name:"参宿四 Betelgeuse",  con:"Orion" },
     { ra:5.795,  dec:-9.670,  mag:0.12,  name:"参宿七 Rigel",        con:"Orion" },
