@@ -5,10 +5,11 @@
 //   · 星表重新校对（猎户、北斗、仙后等形状恢复正常），扩充到约 90 颗，含南天星
 //   · 定位：第一次请求一次 → 失败则按用户自己的时区推测 → 也可在设置里手动填
 //   · 方向修正：仰望星空时，北在上、东在左
-//   · 新增：银河带、星星颜色、流星、星座名、方位
+//   · 新增：银河带、流星、星座名、方位
+//   · 星星画法和 v3 一样（小点 + 亮星光晕），可调亮度，可调从纯白到偏黄的颜色
 //   · 设置面板：扩展设置里的「✦ 星空背景」（找不到扩展面板时，左下角会出现 ✦ 按钮）
 //   · 性能：星位 2 秒算一次、30fps、切到其他标签页自动暂停
-//   · 鼠标在聊天区和菜单上时，不再弹出星名
+//   · 鼠标划过星星显示名字（和 v3 一样）
 //
 //  策略不变：canvas 直接附加到 body，mix-blend-mode:screen 叠加，
 //  不改任何 ST 元素的 position / z-index
@@ -24,7 +25,8 @@
     const ASKED = 'celestial-geo-asked-v4';
     const DEFAULTS = {
         brightness: 1, density: 1, milkyStrength: 1, zoom: 1.2,
-        milkyWay: true, lines: true, colors: true, meteors: true,
+        warmth: 0,   // 星星颜色：0 = 纯白（和 v3 一样），1 = 偏暖黄
+        milkyWay: true, lines: true, meteors: true,
         names: false, compass: false, hover: true, clock: true,
     };
     const store = {
@@ -321,38 +323,14 @@
         );
     }
 
-    /* ───────── 星星颜色 & 光晕贴图 ───────── */
-    function bvToRGB(bv) {
-        const t = 4600 * (1 / (0.92*bv + 1.7) + 1 / (0.92*bv + 0.62)) / 100;
-        let r, g, b;
-        if (t <= 66) {
-            r = 255;
-            g = 99.4708 * Math.log(t) - 161.1196;
-            b = t <= 19 ? 0 : 138.5177 * Math.log(t - 10) - 305.0448;
-        } else {
-            r = 329.6987 * Math.pow(t - 60, -0.1332);
-            g = 288.1222 * Math.pow(t - 60, -0.0755);
-            b = 255;
-        }
-        const c = v => Math.max(0, Math.min(255, v));
-        // 往白色靠一点，不要太艳
-        return [r, g, b].map(v => Math.round(c(v) * 0.6 + 255 * 0.4));
-    }
-    function makeStarSprite([r, g, b]) {
-        const c = document.createElement('canvas'); c.width = c.height = 64;
-        const x = c.getContext('2d');
-        const gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
-        gr.addColorStop(0,    `rgba(${(r+255)>>1},${(g+255)>>1},${(b+255)>>1},1)`);
-        gr.addColorStop(0.12, `rgba(${r},${g},${b},0.9)`);
-        gr.addColorStop(0.30, `rgba(${r},${g},${b},0.25)`);
-        gr.addColorStop(0.60, `rgba(${r},${g},${b},0.06)`);
-        gr.addColorStop(1,    `rgba(${r},${g},${b},0)`);
-        x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
-        return c;
-    }
-    let sprites = [];
-    const buildSprites = () => {
-        sprites = STARS.map(s => makeStarSprite(S.colors ? bvToRGB(s.bv) : [238, 242, 255]));
+    /* ───────── 星星颜色：在 v3 的冷白和暖黄之间调 ───────── */
+    const WHITE = { core: [238, 242, 255], glowA: [220, 235, 255], glowB: [195, 215, 255] };
+    const WARM  = { core: [255, 236, 200], glowA: [255, 225, 175], glowB: [250, 205, 150] };
+    const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+    let COL = WHITE;
+    const buildColors = () => {
+        const t = S.warmth;
+        COL = { core: mix(WHITE.core, WARM.core, t), glowA: mix(WHITE.glowA, WARM.glowA, t), glowB: mix(WHITE.glowB, WARM.glowB, t) };
     };
 
     const mwSprite = (() => {
@@ -456,7 +434,7 @@
         let running = true, rafId = 0, lastDraw = 0, lastSky = 0;
         let meteors = [], nextMeteor = 0, panelRoot = null;
 
-        const starR   = mag => Math.max(0.6, 3.2 - mag * 0.50);
+        const starR   = mag => Math.max(0.5, 3.2 - mag * 0.50);
         const starAlp = mag => Math.max(0.22, Math.min(0.96, 1.05 - mag * 0.12));
         const onScreen = (x, y) => x > -60 && x < W + 60 && y > -60 && y < H + 60;
 
@@ -611,18 +589,29 @@
                 ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
             }
 
-            // 亮星（越靠近地平线闪得越明显）
+            ctx.globalAlpha = 1;
+
+            // 星点（画法和 v3 一样：小圆点 + 亮星淡光晕）
+            const [cr, cg, cb] = COL.core, [ar, ag, ab] = COL.glowA, [br, bg, bb] = COL.glowB;
             for (const s of starPos) {
                 if (!s.ok) continue;
                 const fade = Math.min(1, (s.alt + 5) / 20);
                 if (fade <= 0) continue;
-                const amp = 0.05 + 0.18 * (1 - Math.min(1, Math.max(0, s.alt) / 35));
-                const tw = 1 + amp * Math.sin(sec * (2.2 + (s.i % 5) * 0.7) + s.i * 7.3);
-                ctx.globalAlpha = Math.min(1, starAlp(s.mag) * fade * tw * S.brightness);
-                const size = starR(s.mag) * 17;
-                ctx.drawImage(sprites[s.i], s.x - size/2, s.y - size/2, size, size);
+                const r = starR(s.mag);
+                const alp = Math.min(1, starAlp(s.mag) * fade * S.brightness);
+
+                if (s.mag < 2.5) {
+                    const gr = r * 5.5;
+                    const glow = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, gr);
+                    glow.addColorStop(0,   `rgba(${ar},${ag},${ab},${alp * 0.35})`);
+                    glow.addColorStop(0.4, `rgba(${br},${bg},${bb},${alp * 0.12})`);
+                    glow.addColorStop(1,   'rgba(0,0,0,0)');
+                    ctx.beginPath(); ctx.arc(s.x, s.y, gr, 0, Math.PI * 2);
+                    ctx.fillStyle = glow; ctx.fill();
+                }
+                ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(${cr},${cg},${cb},${alp})`; ctx.fill();
             }
-            ctx.globalAlpha = 1;
 
             if (S.meteors) drawMeteors(t);
         }
@@ -649,7 +638,7 @@
 
         function applySettings(k) {
             if (k === 'density' || k === 'all') rebuildBg();
-            if (k === 'colors'  || k === 'all') buildSprites();
+            if (k === 'warmth'  || k === 'all') buildColors();
             if (!S.hover) hoverEl.style.display = 'none';
             updateClock();
             computeSky(); lastSky = performance.now();
@@ -658,15 +647,17 @@
         /* ───────── 设置面板 ───────── */
         const SLIDERS = [
             ['brightness', '亮度', 0.3, 1.6, 0.05],
+            ['warmth', '白 ↔ 黄', 0, 1, 0.05],
             ['density', '微星数量', 0, 2, 0.1],
             ['milkyStrength', '银河浓度', 0.2, 2, 0.1],
             ['zoom', '视野大小', 0.8, 2, 0.05],
         ];
         const CHECKS = [
-            ['milkyWay', '银河'], ['lines', '星座连线'], ['colors', '星星颜色'], ['meteors', '流星'],
+            ['milkyWay', '银河'], ['lines', '星座连线'], ['meteors', '流星'],
             ['names', '星座名'], ['compass', '方位'], ['hover', '悬停显示星名'], ['clock', '右下角时间'],
         ];
-        const fmtVal = (k, v) => k === 'brightness' ? Math.round(v * 100) + '%' : '×' + (+v).toFixed(2).replace(/\.?0+$/, '');
+        const fmtVal = (k, v) => (k === 'brightness' || k === 'warmth') ? Math.round(v * 100) + '%'
+                                 : '×' + (+v).toFixed(2).replace(/\.?0+$/, '');
 
         function panelHTML() {
             return `<div class="cel-body">
@@ -773,16 +764,12 @@
             }, 500);
         }
 
-        /* ───────── 鼠标悬停（在聊天区、菜单上时不显示） ───────── */
-        const UI_SEL = '#sheld,#top-bar,#top-settings-holder,.drawer-content,#left-nav-panel,#right-nav-panel,' +
-                       '.popup,dialog,#celestial-settings,#celestial-float,#celestial-float-panel,input,textarea,button,a';
+        /* ───────── 鼠标悬停显示星名（和 v3 一样） ───────── */
         document.addEventListener('mousemove', e => {
             if (!S.hover) return;
-            const under = document.elementFromPoint(e.clientX, e.clientY);
-            if (under && under.closest && under.closest(UI_SEL)) { hoverEl.style.display = 'none'; return; }
-            let best = null, minD = 30;
+            let best = null, minD = 44;
             for (const s of starPos) {
-                if (!s.ok || s.alt < 0) continue;
+                if (!s.ok) continue;
                 const d = Math.hypot(s.x - e.clientX, s.y - e.clientY);
                 if (d < minD) { minD = d; best = s; }
             }
@@ -806,7 +793,7 @@
         window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 150); });
 
         // 启动
-        buildSprites();
+        buildColors();
         resize();
         updateClock();
         setInterval(updateClock, 1000);
