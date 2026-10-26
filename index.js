@@ -1,809 +1,849 @@
 // ═══════════════════════════════════════════════════
-//  星空背景脚本 v4 · SillyTavern 扩展
+//  星语 · Starlit Words  v2.0 · SillyTavern 扩展
 //
-//  v4 更新：
-//   · 星表重新校对（猎户、北斗、仙后等形状恢复正常），扩充到约 90 颗，含南天星
-//   · 定位：第一次请求一次 → 失败则按用户自己的时区推测 → 也可在设置里手动填
-//   · 方向修正：仰望星空时，北在上、东在左
-//   · 新增：银河带、流星、星座名、方位
-//   · 星星画法和 v3 一样（小点 + 亮星光晕），可调亮度，可调从纯白到偏黄的颜色
-//   · 设置面板：扩展设置里的「✦ 星空背景」（找不到扩展面板时，左下角会出现 ✦ 按钮）
-//   · 性能：星位 2 秒算一次、30fps、切到其他标签页自动暂停
-//   · 鼠标划过星星显示名字（和 v3 一样）
-//
-//  策略不变：canvas 直接附加到 body，mix-blend-mode:screen 叠加，
-//  不改任何 ST 元素的 position / z-index
+//  · 每一条消息都会变成背景里的一颗普通小星星，均匀散布在整片天空
+//  · 只有你亲手选取的片段，点「✦ 珍藏这段」后才会变成珍藏星
+//  · 首页（还没进入任何聊天时）：每个角色是一个星系，点击即可进入聊天
+//  · 设置面板：色系、亮度、星星大小、星系数量、动画开关、导出
+//  · 导出：本聊天的珍藏 / 所有珍藏（Markdown）/ 完整备份（JSON）
+//  · 自动识别深色 / 浅色主题
 // ═══════════════════════════════════════════════════
 
 (function () {
     'use strict';
-    if (document.getElementById('celestial-canvas')) return;
+    if (window.__starlitWordsLoaded) return;
+    window.__starlitWordsLoaded = true;
 
-    /* ───────── 设置（存在各自浏览器里，每个用户独立） ───────── */
-    const SKEY  = 'celestial-settings-v4';
-    const LKEY  = 'celestial-location-v4';
-    const ASKED = 'celestial-geo-asked-v4';
-    const DEFAULTS = {
-        brightness: 1, density: 1, milkyStrength: 1, zoom: 1.2,
-        warmth: 0,   // 星星颜色：0 = 纯白（和 v3 一样），1 = 偏暖黄
-        milkyWay: true, lines: true, meteors: true,
-        names: false, compass: false, hover: true, clock: true,
-    };
-    const store = {
-        get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
-        set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
-    };
-    const S = Object.assign({}, DEFAULTS, store.get(SKEY) || {});
-    const saveSettings = () => store.set(SKEY, S);
+    const MODULE = 'starlitWords';
+    const META_KEY = 'starlitWordsKeeps';
+    const getCtx = () => (window.SillyTavern && SillyTavern.getContext) ? SillyTavern.getContext() : null;
 
-    /* ───────── 星表 [赤经(时), 赤纬(度), 星等, 色指数B-V, 名字, 星座] ───────── */
-    const STAR_DATA = [
-        // 猎户座
-        [5.9195,  7.407, 0.50,  1.85, '参宿四 Betelgeuse', 'Ori'],
-        [5.2423, -8.202, 0.13, -0.03, '参宿七 Rigel', 'Ori'],
-        [5.4189,  6.350, 1.64, -0.22, '参宿五 Bellatrix', 'Ori'],
-        [5.5334, -0.299, 2.23, -0.22, '参宿三 Mintaka', 'Ori'],
-        [5.6036, -1.202, 1.69, -0.18, '参宿二 Alnilam', 'Ori'],
-        [5.6793, -1.943, 1.77, -0.21, '参宿一 Alnitak', 'Ori'],
-        [5.7959, -9.670, 2.06, -0.17, '参宿六 Saiph', 'Ori'],
-        [5.5856,  9.934, 3.39, -0.16, '觜宿一 Meissa', 'Ori'],
-        // 大熊座（北斗七星）
-        [11.0621, 61.751, 1.79,  1.07, '天枢 Dubhe', 'UMa'],
-        [11.0307, 56.382, 2.37, -0.02, '天璇 Merak', 'UMa'],
-        [11.8972, 53.695, 2.44,  0.04, '天玑 Phecda', 'UMa'],
-        [12.2571, 57.033, 3.31,  0.08, '天权 Megrez', 'UMa'],
-        [12.9005, 55.960, 1.77, -0.02, '玉衡 Alioth', 'UMa'],
-        [13.3988, 54.925, 2.27,  0.02, '开阳 Mizar', 'UMa'],
-        [13.7923, 49.313, 1.86, -0.19, '摇光 Alkaid', 'UMa'],
-        // 小熊座
-        [2.5303,  89.264, 1.98, 0.60, '勾陈一(北极星) Polaris', 'UMi'],
-        [14.8451, 74.156, 2.08, 1.47, '北极二 Kochab', 'UMi'],
-        // 仙后座
-        [0.1529, 59.150, 2.27,  0.34, '王良一 Caph', 'Cas'],
-        [0.6751, 56.537, 2.24,  1.17, '王良四 Schedar', 'Cas'],
-        [0.9451, 60.717, 2.47, -0.15, '策 Navi', 'Cas'],
-        [1.4303, 60.235, 2.68,  0.13, '阁道三 Ruchbah', 'Cas'],
-        [1.9066, 63.670, 3.37, -0.15, '阁道二 Segin', 'Cas'],
-        // 英仙座
-        [3.4054, 49.861, 1.79,  0.48, '天船三 Mirfak', 'Per'],
-        [3.1361, 40.956, 2.12, -0.05, '大陵五 Algol', 'Per'],
-        // 飞马座 + 仙女座（秋季四边形）
-        [23.0794, 15.205, 2.48, -0.04, '室宿一 Markab', 'Peg'],
-        [23.0629, 28.083, 2.42,  1.67, '室宿二 Scheat', 'Peg'],
-        [0.2206,  15.184, 2.83, -0.23, '壁宿一 Algenib', 'Peg'],
-        [0.1398,  29.091, 2.06, -0.11, '壁宿二 Alpheratz', 'And'],
-        [1.1622,  35.621, 2.05,  1.58, '奎宿九 Mirach', 'And'],
-        [2.0650,  42.330, 2.10,  1.37, '天大将军一 Almach', 'And'],
-        // 天鹅座
-        [20.6905, 45.280, 1.25,  0.09, '天津四 Deneb', 'Cyg'],
-        [20.3705, 40.257, 2.23,  0.68, '天津一 Sadr', 'Cyg'],
-        [19.5120, 27.960, 3.08,  1.13, '辇道增七 Albireo', 'Cyg'],
-        [20.7702, 33.970, 2.48,  1.03, '天津九 Gienah', 'Cyg'],
-        [19.7496, 45.131, 2.87, -0.03, '天津二 Fawaris', 'Cyg'],
-        // 天琴座
-        [18.6156, 38.784, 0.03,  0.00, '织女一(织女星) Vega', 'Lyr'],
-        [18.7462, 37.605, 4.36,  0.19, '织女三 ζ Lyr', 'Lyr'],
-        [18.8347, 33.363, 3.52,  0.00, '渐台二 Sheliak', 'Lyr'],
-        [18.9824, 32.690, 3.25, -0.05, '渐台三 Sulafat', 'Lyr'],
-        [18.9084, 36.899, 4.30,  1.68, '天琴座δ δ Lyr', 'Lyr'],
-        // 天鹰座
-        [19.8464,  8.868, 0.77, 0.22, '河鼓二(牛郎星) Altair', 'Aql'],
-        [19.7710, 10.613, 2.72, 1.52, '河鼓三 Tarazed', 'Aql'],
-        [19.9219,  6.407, 3.71, 0.86, '河鼓一 Alshain', 'Aql'],
-        [19.0902, 13.863, 2.99, 0.01, '吴越 Okab', 'Aql'],
-        [19.4249,  3.115, 3.36, 0.32, '右旗三 δ Aql', 'Aql'],
-        // 金牛座
-        [4.5987, 16.509, 0.87,  1.54, '毕宿五 Aldebaran', 'Tau'],
-        [5.4382, 28.608, 1.65, -0.13, '五车五 Elnath', 'Tau'],
-        [3.7914, 24.105, 2.87, -0.09, '昴宿六 Alcyone', 'Tau'],
-        [5.6274, 21.143, 3.00, -0.19, '天关 Tianguan', 'Tau'],
-        [4.4769, 19.180, 3.53,  1.01, '毕宿一 Ain', 'Tau'],
-        [4.3299, 15.628, 3.65,  0.98, '毕宿四 Prima Hyadum', 'Tau'],
-        // 双子座
-        [7.5767, 31.888, 1.58, 0.03, '北河二 Castor', 'Gem'],
-        [7.7553, 28.026, 1.14, 1.00, '北河三 Pollux', 'Gem'],
-        [6.7322, 25.131, 2.98, 1.40, '井宿五 Mebsuda', 'Gem'],
-        [6.3827, 22.514, 2.87, 1.64, '井宿一 Tejat', 'Gem'],
-        [7.3354, 21.982, 3.53, 0.34, '天樽二 Wasat', 'Gem'],
-        [7.0685, 20.570, 3.79, 0.79, '井宿七 Mekbuda', 'Gem'],
-        [6.6285, 16.399, 1.93, 0.00, '井宿三 Alhena', 'Gem'],
-        // 御夫座
-        [5.2782, 45.998, 0.08,  0.80, '五车二 Capella', 'Aur'],
-        [5.9921, 44.948, 1.90,  0.08, '五车三 Menkalinan', 'Aur'],
-        [5.9954, 37.213, 2.62, -0.08, '五车四 Mahasim', 'Aur'],
-        [4.9499, 33.166, 2.69,  1.53, '五车一 Hassaleh', 'Aur'],
-        // 狮子座
-        [10.1395, 11.967, 1.36, -0.11, '轩辕十四 Regulus', 'Leo'],
-        [10.1222, 16.763, 3.49, -0.03, '轩辕十三 η Leo', 'Leo'],
-        [10.3329, 19.842, 2.01,  1.12, '轩辕十二 Algieba', 'Leo'],
-        [10.2782, 23.417, 3.43,  0.31, '轩辕十一 Adhafera', 'Leo'],
-        [9.7642,  23.774, 2.98,  0.81, '轩辕九 Ras Elased', 'Leo'],
-        [11.2351, 20.524, 2.56,  0.12, '西上相 Zosma', 'Leo'],
-        [11.2373, 15.430, 3.33, -0.01, '西次相 Chertan', 'Leo'],
-        [11.8177, 14.572, 2.14,  0.09, '五帝座一 Denebola', 'Leo'],
-        // 室女座
-        [13.4199, -11.161, 0.97, -0.23, '角宿一 Spica', 'Vir'],
-        [12.6943,  -1.449, 2.74,  0.36, '东上相 Porrima', 'Vir'],
-        [12.9267,   3.397, 3.38,  1.58, '东次相 Minelauva', 'Vir'],
-        [13.0363,  10.959, 2.83,  0.94, '东次将 Vindemiatrix', 'Vir'],
-        // 牧夫座
-        [14.2610, 19.182, -0.05, 1.23, '大角 Arcturus', 'Boo'],
-        [14.7498, 27.074, 2.37,  0.97, '梗河一 Izar', 'Boo'],
-        [15.2582, 33.315, 3.47,  0.95, '牧夫座δ Princeps', 'Boo'],
-        [15.0324, 40.390, 3.50,  0.97, '牧夫座β Nekkar', 'Boo'],
-        [14.5347, 38.308, 3.03,  0.19, '招摇 Seginus', 'Boo'],
-        [13.9114, 18.398, 2.68,  0.58, '右摄提一 Muphrid', 'Boo'],
-        // 天蝎座
-        [16.4901, -26.432, 1.06,  1.83, '心宿二 Antares', 'Sco'],
-        [16.0906, -19.806, 2.62, -0.07, '房宿四 Acrab', 'Sco'],
-        [16.0056, -22.622, 2.29, -0.12, '房宿三 Dschubba', 'Sco'],
-        [15.9809, -26.114, 2.89, -0.18, '房宿一 Fang', 'Sco'],
-        [16.3531, -25.593, 2.89,  0.13, '心宿一 Alniyat', 'Sco'],
-        [16.5981, -28.216, 2.82, -0.25, '心宿三 Paikauhale', 'Sco'],
-        [16.8361, -34.293, 2.29,  1.15, '尾宿二 Larawag', 'Sco'],
-        [17.6220, -42.998, 1.86,  0.40, '尾宿五 Sargas', 'Sco'],
-        [17.5601, -37.104, 1.62, -0.22, '尾宿八 Shaula', 'Sco'],
-        // 人马座（茶壶）
-        [18.0968, -30.424, 2.99,  1.00, '箕宿一 Alnasl', 'Sgr'],
-        [18.3499, -29.828, 2.70,  1.38, '箕宿二 Kaus Media', 'Sgr'],
-        [18.4029, -34.385, 1.85, -0.03, '箕宿三 Kaus Australis', 'Sgr'],
-        [18.4661, -25.422, 2.81,  1.04, '斗宿二 Kaus Borealis', 'Sgr'],
-        [18.7609, -26.991, 3.17, -0.11, '斗宿三 φ Sgr', 'Sgr'],
-        [18.9211, -26.297, 2.05, -0.13, '斗宿四 Nunki', 'Sgr'],
-        [19.1157, -27.671, 3.32,  1.19, '斗宿五 τ Sgr', 'Sgr'],
-        [19.0435, -29.880, 2.60,  0.08, '斗宿六 Ascella', 'Sgr'],
-        // 大犬 / 小犬
-        [6.7525, -16.716, -1.46,  0.00, '天狼星 Sirius', 'CMa'],
-        [6.3783, -17.956,  1.98, -0.23, '军市一 Mirzam', 'CMa'],
-        [6.9771, -28.972,  1.50, -0.21, '弧矢七 Adhara', 'CMa'],
-        [7.1399, -26.393,  1.83,  0.68, '弧矢一 Wezen', 'CMa'],
-        [7.4016, -29.303,  2.45, -0.08, '弧矢二 Aludra', 'CMa'],
-        [7.6550,   5.225,  0.34,  0.42, '南河三 Procyon', 'CMi'],
-        [7.4525,   8.289,  2.89, -0.09, '南河二 Gomeisa', 'CMi'],
-        // 南天
-        [12.4433, -63.099, 0.77, -0.24, '十字架二 Acrux', 'Cru'],
-        [12.7953, -59.689, 1.25, -0.24, '十字架三 Mimosa', 'Cru'],
-        [12.5194, -57.113, 1.59,  1.60, '十字架一 Gacrux', 'Cru'],
-        [12.2524, -58.749, 2.79, -0.23, '十字架四 Imai', 'Cru'],
-        [14.6600, -60.835, -0.27, 0.71, '南门二 Rigil Kentaurus', 'Cen'],
-        [14.0637, -60.373,  0.61, -0.23, '马腹一 Hadar', 'Cen'],
-        [6.3992,  -52.696, -0.74, 0.15, '老人星 Canopus', 'Car'],
-        [1.6286,  -57.237,  0.46, -0.16, '水委一 Achernar', 'Eri'],
-        [22.9608, -29.622,  1.16,  0.09, '北落师门 Fomalhaut', 'PsA'],
-    ];
-    // key = 名字里空格后面的英文部分，连线用它来找星
-    const STARS = STAR_DATA.map(([ra, dec, mag, bv, name, con], i) =>
-        ({ ra, dec, mag, bv, name, con, i, key: name.slice(name.indexOf(' ') + 1) }));
+    /* ───────── 工具 ───────── */
+    function fnv(s) {
+        let h = 2166136261;
+        for (const c of String(s)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
+        return h >>> 0;
+    }
+    // 再搅拌一次，避免相似的字串得到相近的位置（v1 星星挤在一边就是这个原因）
+    function mix(h) {
+        h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b);
+        h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35);
+        h ^= h >>> 16; return h >>> 0;
+    }
+    const hash = s => mix(fnv(s));
+    const u01 = h => (h % 100000) / 100000;
+    const frac = v => v - Math.floor(v);
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+    const TAU = Math.PI * 2;
+    function seeded(seed) {
+        let s = seed >>> 0;
+        return () => {
+            s = s + 0x6D2B79F5 | 0;
+            let t = Math.imul(s ^ s >>> 15, 1 | s);
+            t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+            return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        };
+    }
+    const toast = (msg, type = 'info') => { try { window.toastr && window.toastr[type](msg); } catch (e) {} };
 
-    const LINES = [
-        // 猎户座
-        ['Betelgeuse','Bellatrix'],['Bellatrix','Meissa'],['Meissa','Betelgeuse'],
-        ['Betelgeuse','Alnitak'],['Bellatrix','Mintaka'],['Mintaka','Alnilam'],
-        ['Alnilam','Alnitak'],['Mintaka','Rigel'],['Alnitak','Saiph'],
-        // 北斗
-        ['Dubhe','Merak'],['Merak','Phecda'],['Phecda','Megrez'],['Megrez','Dubhe'],
-        ['Megrez','Alioth'],['Alioth','Mizar'],['Mizar','Alkaid'],
-        // 仙后 W
-        ['Caph','Schedar'],['Schedar','Navi'],['Navi','Ruchbah'],['Ruchbah','Segin'],
-        // 英仙
-        ['Mirfak','Algol'],
-        // 飞马四边形 + 仙女
-        ['Markab','Scheat'],['Scheat','Alpheratz'],['Alpheratz','Algenib'],['Algenib','Markab'],
-        ['Alpheratz','Mirach'],['Mirach','Almach'],
-        // 天鹅（北十字）
-        ['Deneb','Sadr'],['Sadr','Albireo'],['Sadr','Gienah'],['Sadr','Fawaris'],
-        // 天琴
-        ['Vega','ζ Lyr'],['ζ Lyr','Sheliak'],['Sheliak','Sulafat'],['Sulafat','δ Lyr'],['δ Lyr','ζ Lyr'],
-        // 天鹰
-        ['Tarazed','Altair'],['Altair','Alshain'],['Altair','δ Aql'],['Tarazed','Okab'],
-        // 金牛
-        ['Prima Hyadum','Aldebaran'],['Aldebaran','Tianguan'],['Prima Hyadum','Ain'],['Ain','Elnath'],
-        // 双子
-        ['Castor','Pollux'],['Castor','Mebsuda'],['Mebsuda','Tejat'],
-        ['Pollux','Wasat'],['Wasat','Mekbuda'],['Mekbuda','Alhena'],
-        // 御夫（五边形，借用金牛的五车五）
-        ['Capella','Menkalinan'],['Menkalinan','Mahasim'],['Mahasim','Elnath'],
-        ['Elnath','Hassaleh'],['Hassaleh','Capella'],
-        // 狮子（镰刀 + 身体）
-        ['Regulus','η Leo'],['η Leo','Algieba'],['Algieba','Adhafera'],['Adhafera','Ras Elased'],
-        ['Algieba','Zosma'],['Zosma','Denebola'],['Denebola','Chertan'],['Chertan','Regulus'],
-        // 室女
-        ['Spica','Porrima'],['Porrima','Minelauva'],['Minelauva','Vindemiatrix'],
-        // 牧夫（风筝）
-        ['Arcturus','Izar'],['Izar','Princeps'],['Princeps','Nekkar'],
-        ['Nekkar','Seginus'],['Seginus','Arcturus'],['Arcturus','Muphrid'],
-        // 天蝎
-        ['Acrab','Dschubba'],['Dschubba','Fang'],['Dschubba','Alniyat'],['Alniyat','Antares'],
-        ['Antares','Paikauhale'],['Paikauhale','Larawag'],['Larawag','Sargas'],['Sargas','Shaula'],
-        // 人马茶壶
-        ['Alnasl','Kaus Media'],['Kaus Media','Kaus Australis'],['Kaus Australis','Alnasl'],
-        ['Kaus Media','Kaus Borealis'],['Kaus Borealis','φ Sgr'],['φ Sgr','Kaus Media'],
-        ['φ Sgr','Nunki'],['Nunki','τ Sgr'],['τ Sgr','Ascella'],['Ascella','φ Sgr'],['Ascella','Kaus Australis'],
-        // 大犬 / 小犬
-        ['Sirius','Mirzam'],['Sirius','Wezen'],['Wezen','Adhara'],['Wezen','Aludra'],
-        ['Procyon','Gomeisa'],
-        // 南十字 / 半人马
-        ['Acrux','Gacrux'],['Mimosa','Imai'],['Rigil Kentaurus','Hadar'],
-    ];
-
-    const CON_NAMES = {
-        Ori:'猎户座', UMa:'大熊座', UMi:'小熊座', Cas:'仙后座', Per:'英仙座', Peg:'飞马座',
-        And:'仙女座', Cyg:'天鹅座', Lyr:'天琴座', Aql:'天鹰座', Tau:'金牛座', Gem:'双子座',
-        Aur:'御夫座', Leo:'狮子座', Vir:'室女座', Boo:'牧夫座', Sco:'天蝎座', Sgr:'人马座',
-        CMa:'大犬座', CMi:'小犬座', Cru:'南十字座', Cen:'半人马座',
+    /* ───────── 色系 ───────── */
+    const PALETTES = {
+        moon:     { name: '月白 · 金',   star: [220, 226, 255], keep: [255, 214, 140] },
+        sakura:   { name: '樱 · 玫瑰金', star: [255, 214, 228], keep: [238, 168, 148] },
+        glacier:  { name: '冰川 · 银白', star: [186, 222, 255], keep: [240, 248, 255] },
+        aurora:   { name: '极光 · 淡紫', star: [176, 238, 214], keep: [208, 178, 255] },
+        candle:   { name: '烛火 · 珊瑚', star: [255, 226, 188], keep: [255, 158, 128] },
+        wisteria: { name: '紫藤 · 淡金', star: [214, 200, 255], keep: [255, 228, 166] },
     };
 
-    /* ───────── 天文计算 ───────── */
-    const R = d => d * Math.PI / 180, D = r => r * 180 / Math.PI;
-    const rand = (a, b) => a + Math.random() * (b - a);
-    const jd = d => d.getTime() / 86400000 + 2440587.5;
-    function gmst(j) {
-        const T = (j - 2451545) / 36525;
-        return (((280.46061837 + 360.98564736629 * (j - 2451545) + T*T*0.000387933 - T*T*T/38710000) % 360) + 360) % 360;
+    /* ───────── 设置（存在酒馆的扩展设置里，跟着账号走） ───────── */
+    const DEFAULTS = { palette: 'moon', brightness: 1, size: 1, rise: true, galaxies: true, galaxyCount: 8, paper: 'night' };
+    let S = Object.assign({}, DEFAULTS);
+    function store() {
+        const c = getCtx();
+        if (!c || !c.extensionSettings) return null;
+        const e = c.extensionSettings[MODULE] || (c.extensionSettings[MODULE] = {});
+        e.settings = Object.assign({}, DEFAULTS, e.settings || {});
+        e.index = e.index || {};
+        return e;
     }
-    const lst = (j, lon) => ((gmst(j) + lon) % 360 + 360) % 360;
-    function altAz(ra, dec, l, lat) {
-        const ha = R(((l - ra) % 360 + 360) % 360), d = R(dec), La = R(lat);
-        const sa = Math.sin(d)*Math.sin(La) + Math.cos(d)*Math.cos(La)*Math.cos(ha);
-        const alt = Math.asin(Math.max(-1, Math.min(1, sa)));
-        const ca = (Math.sin(d) - Math.sin(alt)*Math.sin(La)) / (Math.cos(alt)*Math.cos(La));
-        let az = Math.acos(Math.max(-1, Math.min(1, ca)));
-        if (Math.sin(ha) > 0) az = 2*Math.PI - az;
-        return { alt: D(alt), az: D(az) };
-    }
-    // 银道坐标 → 赤道坐标（画银河用）
-    function gal2eq(l, b) {
-        const aG = R(192.85948), dG = R(27.12825), lN = R(122.93192);
-        const L = R(l), B = R(b);
-        const dec = Math.asin(Math.sin(B)*Math.sin(dG) + Math.cos(B)*Math.cos(dG)*Math.cos(lN - L));
-        const y = Math.cos(B)*Math.sin(lN - L);
-        const x = Math.sin(B)*Math.cos(dG) - Math.cos(B)*Math.sin(dG)*Math.cos(lN - L);
-        return { ra: ((D(aG + Math.atan2(y, x)) % 360) + 360) % 360, dec: D(dec) };
-    }
+    function save() { const c = getCtx(); if (c && typeof c.saveSettingsDebounced === 'function') c.saveSettingsDebounced(); }
 
-    /* ───────── 定位 ───────── */
-    // 常见时区 → 代表城市坐标（定位失败时用，按「看的人自己的电脑时区」推测）
-    const TZ = {
-        'Asia/Shanghai':[31.2,121.5], 'Asia/Urumqi':[43.8,87.6], 'Asia/Taipei':[25.0,121.5],
-        'Asia/Hong_Kong':[22.3,114.2], 'Asia/Macau':[22.2,113.5], 'Asia/Tokyo':[35.7,139.7],
-        'Asia/Seoul':[37.6,127.0], 'Asia/Singapore':[1.3,103.8], 'Asia/Kuala_Lumpur':[3.1,101.7],
-        'Asia/Bangkok':[13.8,100.5], 'Asia/Ho_Chi_Minh':[10.8,106.7], 'Asia/Manila':[14.6,121.0],
-        'Asia/Jakarta':[-6.2,106.8], 'Asia/Kolkata':[28.6,77.2], 'Asia/Dubai':[25.2,55.3],
-        'Europe/London':[51.5,-0.1], 'Europe/Dublin':[53.3,-6.3], 'Europe/Paris':[48.9,2.4],
-        'Europe/Berlin':[52.5,13.4], 'Europe/Rome':[41.9,12.5], 'Europe/Madrid':[40.4,-3.7],
-        'Europe/Amsterdam':[52.4,4.9], 'Europe/Moscow':[55.8,37.6],
-        'America/New_York':[40.7,-74.0], 'America/Chicago':[41.9,-87.6], 'America/Denver':[39.7,-105.0],
-        'America/Los_Angeles':[34.1,-118.2], 'America/Toronto':[43.7,-79.4], 'America/Vancouver':[49.3,-123.1],
-        'America/Mexico_City':[19.4,-99.1], 'America/Sao_Paulo':[-23.5,-46.6],
-        'America/Argentina/Buenos_Aires':[-34.6,-58.4], 'Australia/Sydney':[-33.9,151.2],
-        'Australia/Melbourne':[-37.8,145.0], 'Australia/Perth':[-31.95,115.9],
-        'Pacific/Auckland':[-36.8,174.8], 'Africa/Cairo':[30.0,31.2], 'Africa/Johannesburg':[-26.2,28.0],
-    };
-    function guessFromTZ() {
-        let tz = '';
-        try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
-        if (TZ[tz]) return { lat: TZ[tz][0], lon: TZ[tz][1], src: 'tz' };
-        // 表里没有：经度按时差估，纬度按大洲估
-        const lon = -new Date().getTimezoneOffset() / 60 * 15;
-        const byRegion = { Europe:48, Asia:30, Africa:5, America:35, Australia:-30, Pacific:-15, Atlantic:30, Indian:-10, Antarctica:-75 };
-        let lat = byRegion[tz.split('/')[0]] ?? 35;
-        if (/Argentina|Sao_Paulo|Santiago|Lima|Montevideo|Asuncion|La_Paz/.test(tz)) lat = -25;
-        return { lat, lon, src: 'tz' };
+    /* ───────── 深色 / 浅色 ───────── */
+    function parseRGB(str) {
+        const m = String(str).match(/rgba?\(([^)]+)\)/);
+        if (m) return m[1].split(',').map(v => parseFloat(v));
+        const hex = String(str).trim().match(/^#([0-9a-f]{6})$/i);
+        if (hex) { const n = parseInt(hex[1], 16); return [n >> 16, (n >> 8) & 255, n & 255]; }
+        return null;
     }
-    const savedLoc = store.get(LKEY);
-    let LOC = (savedLoc && (savedLoc.src === 'gps' || savedLoc.src === 'manual')) ? savedLoc : guessFromTZ();
-
-    const fmtLoc = () => {
-        const { lat, lon, src } = LOC;
-        return `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? 'N' : 'S'} ${Math.abs(lon).toFixed(1)}°${lon >= 0 ? 'E' : 'W'}`
-             + (src === 'tz' ? ' · 时区推测' : '');
-    };
-
-    // 只在第一次自动请求；之后要重新定位就去设置里点按钮
-    function requestGPS(force, report) {
-        const say = m => report && report(m);
-        if (!navigator.geolocation) { say('这个浏览器不支持定位，请手动填坐标'); return; }
-        if (!force && store.get(ASKED)) return;
-        store.set(ASKED, 1);
-        say('正在定位…');
-        navigator.geolocation.getCurrentPosition(
-            p => {
-                // 只保留两位小数（约 1 公里），够看星空，也更保护隐私
-                LOC = { lat: +p.coords.latitude.toFixed(2), lon: +p.coords.longitude.toFixed(2), src: 'gps' };
-                store.set(LKEY, LOC);
-                onLocChange();
-                say('定位成功');
-            },
-            err => {
-                if (!window.isSecureContext) say('当前不是 https 或 localhost，浏览器不允许定位，请手动填坐标');
-                else if (err.code === 1) say('定位被拒绝了，可以手动填坐标');
-                else say('定位失败：' + err.message);
-            },
-            { timeout: 15000, maximumAge: 86400000 }
-        );
+    let isDark = true;
+    function detectTheme() {
+        const cs = getComputedStyle(document.body);
+        const c = parseRGB(cs.getPropertyValue('--SmartThemeBodyColor')) || parseRGB(cs.color);
+        isDark = !c || (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) > 140;
+    }
+    function colors() {
+        const p = PALETTES[S.palette] || PALETTES.moon;
+        return isDark
+            ? { star: p.star, keep: p.keep }
+            : { star: p.star.map(v => v * 0.45 | 0), keep: p.keep.map(v => v * 0.68 | 0) };
+    }
+    function ui() {
+        const k = colors().keep;
+        return isDark
+            ? { bg: 'rgba(14,14,20,0.95)', text: 'rgba(228,230,242,0.92)', sub: 'rgba(200,204,222,0.5)', border: rgba(k, 0.35) }
+            : { bg: 'rgba(255,253,248,0.97)', text: 'rgba(55,50,45,0.92)', sub: 'rgba(55,50,45,0.5)', border: rgba(k, 0.45) };
     }
 
-    /* ───────── 星星颜色：在 v3 的冷白和暖黄之间调 ───────── */
-    const WHITE = { core: [238, 242, 255], glowA: [220, 235, 255], glowB: [195, 215, 255] };
-    const WARM  = { core: [255, 236, 200], glowA: [255, 225, 175], glowB: [250, 205, 150] };
-    const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
-    let COL = WHITE;
-    const buildColors = () => {
-        const t = S.warmth;
-        COL = { core: mix(WHITE.core, WARM.core, t), glowA: mix(WHITE.glowA, WARM.glowA, t), glowB: mix(WHITE.glowB, WARM.glowB, t) };
-    };
-
-    const mwSprite = (() => {
-        const c = document.createElement('canvas'); c.width = c.height = 64;
-        const x = c.getContext('2d');
-        const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
-        g.addColorStop(0,   'rgba(175,190,235,1)');
-        g.addColorStop(0.5, 'rgba(160,175,225,0.35)');
-        g.addColorStop(1,   'rgba(150,165,220,0)');
-        x.fillStyle = g; x.fillRect(0, 0, 64, 64);
-        return c;
-    })();
-
-    /* ───────── 银河：沿银道撒雾团，银心方向更亮更宽 ───────── */
-    function gauss() {
-        let u = 0, v = 0;
-        while (!u) u = Math.random();
-        while (!v) v = Math.random();
-        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    /* ───────── 画布 ───────── */
+    const canvas = document.createElement('canvas');
+    canvas.id = 'starlit-words-canvas';
+    Object.assign(canvas.style, {
+        position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
+        zIndex: '0', pointerEvents: 'none', display: 'block',
+    });
+    const g2 = canvas.getContext('2d');
+    let W = 0, H = 0, dpr = 1;
+    function resize() {
+        W = window.innerWidth; H = window.innerHeight;
+        dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
     }
-    const MW = [];
-    (function buildMilkyWay() {
-        while (MW.length < 2200) {
-            const l = Math.random() * 360, lw = l > 180 ? l - 360 : l;
-            const core = Math.exp(-(lw * lw) / (2 * 40 * 40));
-            if (Math.random() > 0.3 + 0.7 * core) continue;
-            const sig = 3 + 6 * core;
-            const b = gauss() * sig;
-            let a = (0.45 + 0.55 * core) * (0.6 + 0.4 * Math.random());
-            // 天鹅座到人马座之间的暗带（大裂缝）
-            if (lw > 8 && lw < 70 && Math.abs(b - 0.5) < 2 + core) a *= 0.35;
-            const { ra, dec } = gal2eq(l, b);
-            MW.push({ ra, dec, a, size: rand(3, 7) });
+
+    /* ───────── 当前聊天 ───────── */
+    let chatId = null;
+    let stars = [];
+    let keeps = [];
+    const keepBorn = {}, keepPulse = {};
+
+    // 均匀铺满整片天空：用低差异序列（R2），再加一点点随机抖动
+    function makeStar(seedA, seedB, id, i, prev, animate) {
+        const key = id + '#' + i;
+        const h = hash(key);
+        const jx = (u01(h) - 0.5) * 0.035, jy = (u01(mix(h)) - 0.5) * 0.035;
+        return {
+            key, mesId: i,
+            x: 0.03 + 0.94 * frac(seedA + i * 0.7548776662 + jx),
+            y: 0.04 + 0.88 * frac(seedB + i * 0.5698402910 + jy),
+            r: 0.6 + u01(h >>> 3) * 0.9,
+            ph: u01(h >>> 7) * TAU,
+            born: prev.has(key) ? prev.get(key) : (animate ? performance.now() : -1e9),
+        };
+    }
+
+    function currentOwner(c) {
+        if (c.groupId) {
+            const g = (c.groups || []).find(g => g.id === c.groupId);
+            return { key: 'group:' + c.groupId, name: g ? g.name : '群聊' };
         }
-    })();
+        const ch = c.characters && c.characters[c.characterId];
+        return ch ? { key: ch.avatar, name: ch.name } : null;
+    }
 
-    /* ───────── 主体 ───────── */
-    function init() {
-        // 面板样式
+    function sync(animate) {
+        const c = getCtx();
+        if (!c) return;
+        const id = (typeof c.getCurrentChatId === 'function' && c.getCurrentChatId()) || '';
+        if (id !== chatId) { chatId = id; stars = []; animate = false; hideCard(); }
+        const prev = new Map(stars.map(s => [s.key, s.born]));
+        const chat = Array.isArray(c.chat) ? c.chat : [];
+        const seedA = u01(hash(id + 'A')), seedB = u01(hash(id + 'B'));
+        stars = [];
+        if (id) chat.forEach((m, i) => { if (m && !m.is_system) stars.push(makeStar(seedA, seedB, id, i, prev, animate && S.rise)); });
+        const meta = c.chatMetadata;
+        keeps = (id && meta && Array.isArray(meta[META_KEY])) ? meta[META_KEY] : [];
+        detectTheme();
+        canvas.style.mixBlendMode = isDark ? 'screen' : 'normal';
+        if (id) updateIndex(c, id); else buildGalaxies();
+    }
+
+    // 记录每个角色的消息数和珍藏，首页星系和「导出全部」用
+    function updateIndex(c, id) {
+        const e = store(), owner = currentOwner(c);
+        if (!e || !owner) return;
+        const ent = e.index[owner.key] || (e.index[owner.key] = { name: owner.name, chats: {} });
+        ent.name = owner.name;
+        ent.last = Date.now();
+        ent.chats[id] = {
+            msgs: stars.length,
+            keeps: keeps.map(k => ({ text: k.text, who: k.who, when: k.when })),
+        };
+        save();
+    }
+
+    /* ───────── 首页星系 ───────── */
+    let galaxies = [];
+    function buildGalaxies() {
+        galaxies = [];
+        const c = getCtx(), e = store();
+        if (!c || !S.galaxies || !Array.isArray(c.characters)) return;
+        const lastOf = ch => {
+            const ent = e && e.index[ch.avatar];
+            return Math.max(ent ? ent.last || 0 : 0, Number(ch.date_last_chat) || Date.parse(ch.date_last_chat) || 0);
+        };
+        const list = c.characters.map((ch, i) => ({ ch, i })).filter(o => o.ch && o.ch.avatar);
+        list.sort((a, b) => lastOf(b.ch) - lastOf(a.ch));
+        const pick = list.slice(0, clamp(Math.round(S.galaxyCount), 1, 16));
+        const n = pick.length;
+        pick.forEach((o, k) => {
+            const ent = e && e.index[o.ch.avatar];
+            const chats = ent ? Object.values(ent.chats || {}) : [];
+            const tracked = chats.reduce((s, x) => s + (x.msgs || 0), 0);
+            const msgs = Math.max(tracked, Math.round((o.ch.chat_size || 0) / 350));
+            const keepN = chats.reduce((s, x) => s + ((x.keeps && x.keeps.length) || 0), 0);
+            const rand = seeded(hash(o.ch.avatar));
+            const scale = 0.35 + 0.65 * Math.min(1, Math.log(1 + msgs) / Math.log(3001));
+            const arms = rand() < 0.5 ? 2 : 3;
+            const count = 60 + Math.round(340 * scale);
+            const parts = [];
+            for (let p = 0; p < count; p++) {
+                const arm = p % arms, t = Math.pow(rand(), 0.8);
+                parts.push({
+                    t: t + (rand() - 0.5) * 0.06,
+                    a: arm * TAU / arms + t * 3.2 + (rand() - 0.5) * 0.7 * (1 - t * 0.4),
+                    s: 0.5 + rand() * 1.1,
+                    al: 0.35 + rand() * 0.65,
+                });
+            }
+            const golds = [];
+            for (let q = 0; q < Math.min(keepN, 24); q++) golds.push(parts[Math.floor(rand() * parts.length)]);
+            const ang = -Math.PI / 2 + k / Math.max(1, n) * TAU + 0.35;
+            galaxies.push({
+                chid: o.i, name: o.ch.name, msgs, keepN, parts, golds, scale,
+                fx: n === 1 ? 0.5 : 0.5 + 0.36 * Math.cos(ang),
+                fy: n === 1 ? 0.3 : 0.5 + 0.34 * Math.sin(ang),
+                tilt: 0.42 + rand() * 0.35, orient: rand() * Math.PI, spin: (rand() < 0.5 ? 1 : -1) * (0.02 + rand() * 0.02),
+            });
+        });
+    }
+    const galaxyR = g => Math.min(W, H) * 0.085 * g.scale;
+    let hoverGalaxy = null;
+
+    /* ───────── 绘制 ───────── */
+    function riseOrigin() {
+        const sf = document.getElementById('send_form');
+        if (sf) { const r = sf.getBoundingClientRect(); return [r.left + r.width / 2, r.top]; }
+        return [W / 2, H];
+    }
+    function sparkle(x, y, s, a, c) {
+        const g = g2.createRadialGradient(x, y, 0, x, y, s * 7);
+        g.addColorStop(0, rgba(c, a * 0.4)); g.addColorStop(1, rgba(c, 0));
+        g2.fillStyle = g; g2.beginPath(); g2.arc(x, y, s * 7, 0, TAU); g2.fill();
+        g2.fillStyle = rgba(c, a);
+        g2.beginPath();
+        g2.moveTo(x, y - s * 4);
+        g2.quadraticCurveTo(x, y, x + s * 4, y);
+        g2.quadraticCurveTo(x, y, x, y + s * 4);
+        g2.quadraticCurveTo(x, y, x - s * 4, y);
+        g2.quadraticCurveTo(x, y, x, y - s * 4);
+        g2.fill();
+    }
+
+    function drawChat(t, sec, C) {
+        const B = S.brightness, Z = S.size;
+        const [ox, oy] = riseOrigin();
+        for (const s of stars) {
+            const tx = s.x * W, ty = s.y * H;
+            let x = tx, y = ty;
+            const age = (t - s.born) / 1000;
+            if (age < 1.8) {
+                const p = Math.min(1, age / 1.6), e = 1 - Math.pow(1 - p, 3);
+                const cx = (ox + tx) / 2, cy = ty + (oy - ty) * 0.6;
+                const pt = q => [(1-q)*(1-q)*ox + 2*(1-q)*q*cx + q*q*tx, (1-q)*(1-q)*oy + 2*(1-q)*q*cy + q*q*ty];
+                [x, y] = pt(e);
+                for (let k = 1; k < 10; k++) {
+                    const [qx, qy] = pt(Math.max(0, e - k * 0.025));
+                    g2.fillStyle = rgba(C.star, Math.min(1, 0.35 * (1 - k / 10) * B));
+                    g2.beginPath(); g2.arc(qx, qy, 1.6 * (1 - k / 12) * Z, 0, TAU); g2.fill();
+                }
+                if (p >= 1) {
+                    const f = Math.max(0, 1 - (age - 1.6) / 0.2);
+                    g2.fillStyle = rgba(C.star, 0.3 * f * B);
+                    g2.beginPath(); g2.arc(x, y, (9 * (1 - f) + 2) * Z, 0, TAU); g2.fill();
+                }
+            }
+            g2.fillStyle = rgba(C.star, Math.min(1, 0.7 * B * (0.75 + 0.25 * Math.sin(sec * 0.8 + s.ph))));
+            g2.beginPath(); g2.arc(x, y, s.r * Z, 0, TAU); g2.fill();
+        }
+        for (const k of keeps) {
+            const x = k.x * W, y = k.y * H;
+            const age = (t - (keepBorn[k.id] ?? -1e9)) / 1000, grow = Math.min(1, age / 0.8);
+            if (age < 0.8) {
+                g2.strokeStyle = rgba(C.keep, 0.5 * (1 - grow)); g2.lineWidth = 1;
+                g2.beginPath(); g2.arc(x, y, 4 + 22 * grow, 0, TAU); g2.stroke();
+            }
+            const pa = (t - (keepPulse[k.id] ?? -1e9)) / 1000;
+            if (pa < 2.4) {
+                const q = (pa % 1.2) / 1.2;
+                g2.strokeStyle = rgba(C.keep, 0.55 * (1 - q)); g2.lineWidth = 1;
+                g2.beginPath(); g2.arc(x, y, 6 + 26 * q, 0, TAU); g2.stroke();
+            }
+            const tw = 0.8 + 0.2 * Math.sin(sec * 1.2 + u01(hash(k.id)) * TAU);
+            sparkle(x, y, 1.7 * Z * Math.max(0.05, grow), Math.min(1, 0.95 * tw * B), C.keep);
+        }
+    }
+
+    function drawGalaxies(sec, C) {
+        const B = S.brightness, Z = S.size;
+        const U = ui();
+        for (const g of galaxies) {
+            const gx = g.fx * W, gy = g.fy * H, R = galaxyR(g);
+            const hov = hoverGalaxy === g, boost = hov ? 1.35 : 1;
+            const rot = sec * g.spin, co = Math.cos(g.orient), si = Math.sin(g.orient);
+            const core = g2.createRadialGradient(gx, gy, 0, gx, gy, R * 0.35);
+            core.addColorStop(0, rgba(C.star, Math.min(1, 0.45 * B * boost)));
+            core.addColorStop(1, rgba(C.star, 0));
+            g2.fillStyle = core; g2.beginPath(); g2.arc(gx, gy, R * 0.35, 0, TAU); g2.fill();
+            const place = p => {
+                const a = p.a + rot, rx = Math.cos(a) * p.t * R, ry = Math.sin(a) * p.t * R * g.tilt;
+                return [gx + rx * co - ry * si, gy + rx * si + ry * co];
+            };
+            for (const p of g.parts) {
+                const [x, y] = place(p), s = p.s * Z * 0.8;
+                g2.fillStyle = rgba(C.star, Math.min(1, (1 - p.t * 0.55) * p.al * 0.75 * B * boost));
+                g2.fillRect(x - s / 2, y - s / 2, s, s);
+            }
+            for (const p of g.golds) {
+                const [x, y] = place(p);
+                sparkle(x, y, 0.8 * Z, Math.min(1, 0.9 * B), C.keep);
+            }
+            g2.textAlign = 'center';
+            g2.font = `${hov ? 14 : 13}px serif`;
+            g2.fillStyle = rgba(C.star, Math.min(1, (hov ? 0.95 : 0.7) * B));
+            g2.fillText(g.name, gx, gy + R * g.tilt + 26);
+            g2.font = '11px serif';
+            g2.fillStyle = U.sub;
+            g2.fillText(`${g.msgs.toLocaleString()} 句` + (g.keepN ? ` · ${g.keepN} 颗珍藏` : ''), gx, gy + R * g.tilt + 42);
+        }
+    }
+
+    let running = true, rafId = 0, last = 0, lastTheme = 0, lastGalaxyCheck = 0;
+    function loop(t) {
+        if (!running) return;
+        rafId = requestAnimationFrame(loop);
+        if (t - last < 33) return;
+        last = t;
+        if (t - lastTheme > 3000) {
+            detectTheme(); canvas.style.mixBlendMode = isDark ? 'screen' : 'normal'; lastTheme = t;
+        }
+        // 首页时，角色列表可能晚一点才载入
+        if (!chatId && S.galaxies && !galaxies.length && t - lastGalaxyCheck > 2000) { buildGalaxies(); lastGalaxyCheck = t; }
+        const sec = t / 1000, C = colors();
+        g2.setTransform(1, 0, 0, 1, 0, 0);
+        g2.clearRect(0, 0, canvas.width, canvas.height);
+        g2.setTransform(dpr, 0, 0, dpr, 0, 0);
+        if (chatId) drawChat(t, sec, C);
+        else if (S.galaxies) drawGalaxies(sec, C);
+    }
+
+    /* ───────── 展开文字的卡片 ───────── */
+    const card = document.createElement('div');
+    card.id = 'starlit-words-card';
+    Object.assign(card.style, {
+        position: 'fixed', display: 'none', zIndex: '10002', maxWidth: '280px',
+        padding: '14px 16px', borderRadius: '6px', pointerEvents: 'auto',
+    });
+    let cardKeep = null;
+    function showCard(k) {
+        cardKeep = k;
+        const U = ui();
+        card.innerHTML = '';
+        card.style.background = U.bg; card.style.border = '0.5px solid ' + U.border;
+        const q = document.createElement('div');
+        q.textContent = '「' + k.text + '」';
+        Object.assign(q.style, { fontSize: '15px', lineHeight: '1.75', color: U.text, whiteSpace: 'pre-wrap' });
+        const meta = document.createElement('div');
+        meta.textContent = [k.who, k.when].filter(Boolean).join(' · ');
+        Object.assign(meta.style, { marginTop: '8px', fontSize: '12px', letterSpacing: '1px', color: U.sub });
+        const rm = document.createElement('div');
+        rm.textContent = '移除这颗星';
+        Object.assign(rm.style, { marginTop: '10px', fontSize: '12px', color: U.sub, cursor: 'pointer', textAlign: 'right' });
+        rm.addEventListener('click', e => { e.stopPropagation(); removeKeep(k.id); });
+        card.append(q, meta, rm);
+        card.style.display = 'block';
+        const cw = card.offsetWidth, ch = card.offsetHeight, x = k.x * W, y = k.y * H;
+        card.style.left = clamp(x - cw / 2, 8, W - cw - 8) + 'px';
+        card.style.top = (y > ch + 24 ? y - ch - 14 : Math.min(y + 14, H - ch - 8)) + 'px';
+    }
+    function hideCard() { card.style.display = 'none'; cardKeep = null; }
+
+    /* ───────── 选字 → 珍藏 ───────── */
+    const keepBtn = document.createElement('div');
+    keepBtn.id = 'starlit-words-keepbtn';
+    keepBtn.textContent = '✦ 珍藏这段';
+    Object.assign(keepBtn.style, {
+        position: 'fixed', display: 'none', zIndex: '10003', padding: '5px 12px',
+        borderRadius: '4px', fontSize: '13px', cursor: 'pointer', userSelect: 'none',
+        WebkitUserSelect: 'none', letterSpacing: '1px',
+    });
+    let pending = null, selTimer = 0;
+    function checkSelection() {
+        const sel = window.getSelection();
+        const txt = sel ? sel.toString().trim() : '';
+        if (!txt || !sel.rangeCount || !chatId) { keepBtn.style.display = 'none'; return; }
+        let node = sel.anchorNode;
+        if (node && node.nodeType === 3) node = node.parentElement;
+        const mesText = node && node.closest ? node.closest('.mes_text') : null;
+        const mes = mesText ? mesText.closest('.mes') : null;
+        if (!mes || !mes.hasAttribute('mesid')) { keepBtn.style.display = 'none'; return; }
+        pending = { text: txt.slice(0, 600), mesId: Number(mes.getAttribute('mesid')) };
+        const rect = sel.getRangeAt(0).getBoundingClientRect(), U = ui(), C = colors();
+        keepBtn.style.background = U.bg; keepBtn.style.color = rgba(C.keep, 1); keepBtn.style.border = '0.5px solid ' + U.border;
+        keepBtn.style.display = 'block';
+        const bw = keepBtn.offsetWidth;
+        keepBtn.style.left = clamp(rect.left + rect.width / 2 - bw / 2, 8, W - bw - 8) + 'px';
+        keepBtn.style.top = clamp(rect.bottom + 10, 8, H - 44) + 'px';
+    }
+    function keepPending() {
+        const c = getCtx();
+        if (!pending || !c || !c.chatMetadata || !chatId) return;
+        const m = (c.chat || [])[pending.mesId] || {};
+        const s = stars.find(s => s.mesId === pending.mesId);
+        const h = hash(pending.text + Date.now());
+        const k = {
+            id: Date.now().toString(36) + (h % 1679616).toString(36),
+            text: pending.text, who: m.name || '', when: m.send_date || '', mesId: pending.mesId,
+            x: clamp((s ? s.x : 0.5) + (u01(h) - 0.5) * 0.08, 0.04, 0.96),
+            y: clamp((s ? s.y : 0.4) + (u01(mix(h)) - 0.5) * 0.1, 0.05, 0.92),
+        };
+        if (!Array.isArray(c.chatMetadata[META_KEY])) c.chatMetadata[META_KEY] = [];
+        c.chatMetadata[META_KEY].push(k);
+        keeps = c.chatMetadata[META_KEY];
+        keepBorn[k.id] = performance.now();
+        if (typeof c.saveMetadata === 'function') c.saveMetadata();
+        updateIndex(c, chatId);
+        keepBtn.style.display = 'none';
+        pending = null;
+        try { window.getSelection().removeAllRanges(); } catch (e) {}
+    }
+    function removeKeep(id) {
+        const c = getCtx();
+        if (!c || !c.chatMetadata || !Array.isArray(c.chatMetadata[META_KEY])) return;
+        const arr = c.chatMetadata[META_KEY], i = arr.findIndex(k => k.id === id);
+        if (i >= 0) arr.splice(i, 1);
+        keeps = arr;
+        if (typeof c.saveMetadata === 'function') c.saveMetadata();
+        updateIndex(c, chatId);
+        hideCard(); renderList();
+    }
+
+    /* ───────── 点击：聊天里点珍藏星，首页点星系 ───────── */
+    const CHAT_BLOCK = '#sheld,#top-bar,#top-settings-holder,.drawer-content,#left-nav-panel,#right-nav-panel,' +
+                       '.popup,dialog,#send_form,#starlit-words-card,#starlit-words-keepbtn,#starlit-words-list,' +
+                       'input,textarea,button,a,select';
+    const HOME_BLOCK = '#top-bar,#top-settings-holder,.drawer-content,#left-nav-panel,#right-nav-panel,.popup,dialog,' +
+                       '#send_form,.mes,#starlit-words-list,input,textarea,button,a,select,label,.menu_button,' +
+                       '.recentChat,.welcomeRecent,.inline-drawer';
+    function keepAt(x, y) {
+        let best = null, bd = 18;
+        for (const k of keeps) { const d = Math.hypot(k.x * W - x, k.y * H - y); if (d < bd) { bd = d; best = k; } }
+        return best;
+    }
+    function galaxyAt(x, y) {
+        for (const g of galaxies) if (Math.hypot(g.fx * W - x, g.fy * H - y) < Math.max(28, galaxyR(g) * 1.1)) return g;
+        return null;
+    }
+    async function openGalaxy(g) {
+        const c = getCtx();
+        try { if (c && typeof c.selectCharacterById === 'function') { await c.selectCharacterById(String(g.chid)); return; } } catch (e) {}
+        const el = document.querySelector(`.character_select[chid="${g.chid}"]`);
+        if (el) el.click(); else toast('找不到这个角色，请从角色列表进入');
+    }
+    document.addEventListener('click', e => {
+        if (card.contains(e.target) || keepBtn.contains(e.target)) return;
+        const tg = e.target;
+        if (!chatId) {
+            if (!S.galaxies || (tg.closest && tg.closest(HOME_BLOCK))) return;
+            const g = galaxyAt(e.clientX, e.clientY);
+            if (g) openGalaxy(g);
+            return;
+        }
+        if (tg.closest && tg.closest(CHAT_BLOCK)) { if (cardKeep) hideCard(); return; }
+        const k = keepAt(e.clientX, e.clientY);
+        if (k) showCard(k); else hideCard();
+    });
+    document.addEventListener('mousemove', e => {
+        const tg = e.target;
+        if (!chatId) {
+            hoverGalaxy = (S.galaxies && !(tg.closest && tg.closest(HOME_BLOCK))) ? galaxyAt(e.clientX, e.clientY) : null;
+            document.body.style.cursor = hoverGalaxy ? 'pointer' : '';
+            return;
+        }
+        if (tg.closest && tg.closest(CHAT_BLOCK)) return;
+        document.body.style.cursor = keepAt(e.clientX, e.clientY) ? 'pointer' : '';
+    }, { passive: true });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') { hideCard(); hideList(); } });
+
+    /* ───────── 导出 ───────── */
+    function download(name, text, type) {
+        const blob = new Blob([text], { type });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob); a.download = name;
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+    }
+    const quoteMd = k => `> ${String(k.text).replace(/\n/g, '\n> ')}\n>\n> — ${[k.who, k.when].filter(Boolean).join(' · ')}\n`;
+    const stamp = () => new Date().toISOString().slice(0, 10);
+    function exportCurrent() {
+        const c = getCtx(), owner = c && currentOwner(c);
+        if (!chatId || !keeps.length) { toast('这个聊天还没有珍藏的话'); return; }
+        const name = owner ? owner.name : '聊天';
+        const md = `# 星语 · ${name}\n\n*${chatId}*\n\n` + keeps.map(quoteMd).join('\n');
+        download(`星语-${name}-${stamp()}.md`, md, 'text/markdown;charset=utf-8');
+    }
+    function exportAll() {
+        const e = store();
+        if (!e) return;
+        let md = `# 星语 · 所有珍藏\n\n导出日期：${stamp()}\n`, total = 0;
+        for (const ent of Object.values(e.index)) {
+            const chats = Object.entries(ent.chats || {}).filter(([, v]) => v.keeps && v.keeps.length);
+            if (!chats.length) continue;
+            md += `\n## ${ent.name}\n`;
+            for (const [cid, v] of chats) {
+                md += `\n### ${cid}\n\n` + v.keeps.map(quoteMd).join('\n');
+                total += v.keeps.length;
+            }
+        }
+        if (!total) { toast('还没有任何珍藏的话'); return; }
+        download(`星语-所有珍藏-${stamp()}.md`, md, 'text/markdown;charset=utf-8');
+    }
+    /* ───────── 星图卷轴（.html） ───────── */
+    function scrollHTML(sections) {
+        const p = PALETTES[S.palette] || PALETTES.moon;
+        const night = S.paper !== 'paper';
+        const star = night ? p.star : p.star.map(v => v * 0.45 | 0);
+        const keep = night ? p.keep : p.keep.map(v => v * 0.68 | 0);
+        const theme = night
+            ? { bg: '#0a0b12', ink: 'rgba(226,229,242,0.9)', sub: 'rgba(190,198,222,0.5)', skyA: 0.45, mw: 0.12 }
+            : { bg: '#f3eee3', ink: 'rgba(58,50,42,0.92)', sub: 'rgba(58,50,42,0.5)', skyA: 0.28, mw: 0.07 };
+        const single = sections.length === 1;
+        const title = single ? sections[0].title : '星图卷轴';
+        const data = JSON.stringify({ sections, exported: stamp(), single }).replace(/</g, '\\u003c');
+        return `<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>星图卷轴 · ${title.replace(/</g, '&lt;')}</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&family=Noto+Serif+SC:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:${theme.bg};--ink:${theme.ink};--sub:${theme.sub};--star:${star.join(',')};--keep:${keep.join(',')};--serif:'Cormorant Garamond','Noto Serif SC','Songti SC','Noto Serif TC',serif}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--serif)}
+body{position:relative;min-height:100vh;overflow-x:hidden;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+#sky{position:absolute;top:0;left:0;pointer-events:none}
+.scroll{position:relative;max-width:760px;margin:0 auto;padding:72px 20px 96px}
+.rod{display:flex;align-items:center;gap:14px;color:rgba(var(--keep),.75)}
+.rod::before,.rod::after{content:'';flex:1;border-top:1px solid rgba(var(--keep),.35);border-bottom:1px solid rgba(var(--keep),.15);padding-top:3px}
+.rod span{font-size:13px;letter-spacing:6px}
+header{text-align:center;padding:44px 0 26px}
+.kicker{font-size:12px;letter-spacing:8px;color:var(--sub)}
+h1{margin:16px 0 8px;font-weight:300;font-size:40px;letter-spacing:10px}
+h1 em,h2 em{font-style:normal;color:rgb(var(--keep))}
+h2{margin:0 0 6px;font-weight:300;font-size:28px;letter-spacing:8px;text-align:center}
+.meta{font-size:13px;letter-spacing:3px;color:var(--sub);font-style:italic;text-align:center}
+section{padding-top:30px}section+section{margin-top:40px}
+.chart{position:relative;margin-top:26px}
+.lines{position:absolute;top:0;left:0;width:100%;overflow:visible;pointer-events:none}
+.entry{position:relative;display:grid;grid-template-columns:1fr 64px 1fr;align-items:center;min-height:128px;break-inside:avoid}
+.node{grid-column:2;justify-self:center;width:22px;height:22px}
+.node svg{width:100%;height:100%;overflow:visible}
+.text{padding:10px 6px}
+.l .text{grid-column:1;grid-row:1;text-align:right}.r .text{grid-column:3;grid-row:1}
+.quote{font-size:18px;line-height:1.85;font-weight:300;white-space:pre-wrap}
+.who{margin-top:8px;font-size:12px;letter-spacing:2px;color:var(--sub);font-style:italic}
+.num{font-size:11px;letter-spacing:3px;color:rgba(var(--keep),.6);margin-bottom:4px}
+footer{text-align:center;padding:40px 0 34px;font-size:13px;letter-spacing:3px;color:var(--sub);font-style:italic;line-height:2}
+@media (max-width:560px){h1{font-size:30px;letter-spacing:6px}.entry{grid-template-columns:44px 1fr}.node{grid-column:1}.l .text,.r .text{grid-column:2;text-align:left}.quote{font-size:16px}}
+</style></head>
+<body><canvas id="sky"></canvas>
+<div class="scroll"><div class="rod"><span>✦</span></div><div id="main"></div><footer id="foot"></footer><div class="rod"><span>✦</span></div></div>
+<script>
+var D=${data};
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+var CN=['一','二','三','四','五','六','七','八','九'];
+function cn(n){if(n<10)return CN[n-1];var t=Math.floor(n/10),o=n%10;if(n>=100)return String(n);return (t>1?CN[t-1]:'')+'十'+(o?CN[o-1]:'');}
+function hs(s){var h=2166136261;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}h^=h>>>16;h=Math.imul(h,0x85ebca6b);h^=h>>>13;return (h>>>0)/4294967296;}
+var main=document.getElementById('main'),total=0;
+var head=document.createElement('header');
+head.innerHTML='<div class="kicker">STARLIT WORDS · 星语</div><h1>'+(D.single?'<em>'+esc(D.sections[0].title)+'</em>座':'星图卷轴')+'</h1>';
+main.appendChild(head);
+D.sections.forEach(function(sec){
+  var K=sec.keeps,el=document.createElement('section');total+=K.length;
+  var meta=(K[0]&&K[0].when?esc(K[0].when)+' — '+esc(K[K.length-1].when)+' · ':'')+K.length+' 颗珍藏'+(sec.total?' · '+Number(sec.total).toLocaleString()+' 句对话':'');
+  el.innerHTML=(D.single?'':'<h2><em>'+esc(sec.title)+'</em>座</h2>')+'<div class="meta">'+meta+'</div><div class="chart"><svg class="lines"></svg></div>';
+  var chart=el.querySelector('.chart');
+  K.forEach(function(k,i){
+    var e=document.createElement('div');e.className='entry '+(i%2?'r':'l');
+    var big=0.85+hs(k.text)*0.5;
+    e.innerHTML='<div class="node" style="transform:translateX('+((hs(k.text+'x')-0.5)*28)+'px)"><svg viewBox="-12 -12 24 24"><circle r="11" fill="rgba(var(--keep),0.10)"/><path transform="scale('+big+')" d="M0,-8 Q0,0 8,0 Q0,0 0,8 Q0,0 -8,0 Q0,0 0,-8Z" fill="rgb(var(--keep))"/></svg></div>'+
+      '<div class="text"><div class="num">第'+cn(i+1)+'颗</div><div class="quote">「'+esc(k.text)+'」</div><div class="who">'+[esc(k.who),esc(k.when)].filter(Boolean).join(' · ')+'</div></div>';
+    chart.appendChild(e);
+  });
+  main.appendChild(el);
+});
+document.getElementById('foot').innerHTML=(D.single?esc(D.sections[0].title)+'座 · ':'')+'共 '+total+' 颗星<br>'+esc(D.exported)+' · 摘自 SillyTavern · 星语';
+function lines(){
+  document.querySelectorAll('.chart').forEach(function(chart){
+    var svg=chart.querySelector('.lines'),cr=chart.getBoundingClientRect(),d='',prev=null;
+    chart.querySelectorAll('.node').forEach(function(n){var r=n.getBoundingClientRect(),x=r.left+r.width/2-cr.left,y=r.top+r.height/2-cr.top;
+      if(!prev)d+='M'+x+','+y;else{var my=(prev[1]+y)/2;d+=' C'+prev[0]+','+my+' '+x+','+my+' '+x+','+y;}prev=[x,y];});
+    svg.setAttribute('height',cr.height);
+    svg.innerHTML='<path d="'+d+'" fill="none" stroke="rgba(var(--keep),0.3)" stroke-width="1" stroke-dasharray="2 5"/>';
+  });
+}
+function sky(){
+  var cv=document.getElementById('sky'),W=document.documentElement.scrollWidth,H=document.documentElement.scrollHeight,dpr=Math.min(window.devicePixelRatio||1,2);
+  cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
+  var g=cv.getContext('2d');g.scale(dpr,dpr);var seed=7;function r(){seed=(seed*16807)%2147483647;return seed/2147483647;}
+  var n=Math.floor(W*H/2600);
+  for(var i=0;i<n;i++){g.fillStyle='rgba(${star.join(',')},'+(r()*${theme.skyA}+0.06)+')';g.beginPath();g.arc(r()*W,r()*H,r()*0.9+0.2,0,6.283);g.fill();}
+  for(var j=0;j<900;j++){var t=r(),off=(r()+r()+r()-1.5)*120;g.fillStyle='rgba(${star.join(',')},'+(0.04+r()*${theme.mw})+')';g.beginPath();g.arc(W*(0.15+0.7*t)+off*0.6,H*t+off,r()*1.1+0.2,0,6.283);g.fill();}
+}
+function layout(){lines();sky();}
+window.addEventListener('load',layout);window.addEventListener('resize',layout);
+if(document.fonts)document.fonts.ready.then(layout);
+<\/script></body></html>`;
+    }
+    function exportScrollCurrent() {
+        const c = getCtx(), owner = c && currentOwner(c);
+        if (!chatId || !keeps.length) { toast('这个聊天还没有珍藏的话'); return; }
+        const name = owner ? owner.name : '聊天';
+        const html = scrollHTML([{ title: name, total: stars.length, keeps: keeps.map(k => ({ text: k.text, who: k.who, when: k.when })) }]);
+        download(`星图卷轴-${name}-${stamp()}.html`, html, 'text/html;charset=utf-8');
+    }
+    function exportScrollAll() {
+        const e = store();
+        if (!e) return;
+        const sections = [];
+        for (const ent of Object.values(e.index)) {
+            const chats = Object.values(ent.chats || {});
+            const ks = chats.flatMap(v => v.keeps || []);
+            if (ks.length) sections.push({ title: ent.name, total: chats.reduce((s, v) => s + (v.msgs || 0), 0), keeps: ks });
+        }
+        if (!sections.length) { toast('还没有任何珍藏的话'); return; }
+        download(`星图卷轴-全部-${stamp()}.html`, scrollHTML(sections), 'text/html;charset=utf-8');
+    }
+
+    function exportBackup() {
+        const e = store();
+        if (!e) return;
+        download(`星语-备份-${stamp()}.json`, JSON.stringify({ version: 2, exported: stamp(), index: e.index }, null, 2), 'application/json');
+    }
+
+    /* ───────── 魔法棒菜单：珍藏的星星 ───────── */
+    const listPanel = document.createElement('div');
+    listPanel.id = 'starlit-words-list';
+    Object.assign(listPanel.style, {
+        position: 'fixed', display: 'none', zIndex: '10004', left: '50%', top: '50%',
+        transform: 'translate(-50%,-50%)', width: 'min(360px, calc(100vw - 32px))',
+        maxHeight: '70vh', overflowY: 'auto', padding: '16px 18px', borderRadius: '8px',
+    });
+    function hideList() { listPanel.style.display = 'none'; }
+    function renderList() {
+        if (listPanel.style.display === 'none') return;
+        const U = ui(), C = colors();
+        listPanel.innerHTML = '';
+        listPanel.style.background = U.bg; listPanel.style.border = '0.5px solid ' + U.border;
+        const head = document.createElement('div');
+        Object.assign(head.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', gap: '10px' });
+        const title = document.createElement('div');
+        title.textContent = '✦ 珍藏的星星';
+        Object.assign(title.style, { fontSize: '14px', letterSpacing: '2px', color: rgba(C.keep, 1), flex: '1' });
+        const exp = document.createElement('div');
+        exp.textContent = '导出卷轴';
+        Object.assign(exp.style, { cursor: 'pointer', color: U.sub, fontSize: '12px' });
+        exp.addEventListener('click', exportScrollCurrent);
+        const close = document.createElement('div');
+        close.textContent = '✕';
+        Object.assign(close.style, { cursor: 'pointer', color: U.sub, padding: '0 4px' });
+        close.addEventListener('click', hideList);
+        head.append(title, exp, close);
+        listPanel.appendChild(head);
+        if (!chatId || !keeps.length) {
+            const empty = document.createElement('div');
+            empty.textContent = chatId
+                ? '这片星空还没有珍藏的话。在聊天里拖选或长按选一段文字，点「✦ 珍藏这段」，它就会变成一颗星。'
+                : '先进入一个聊天，就能看到那里的珍藏。';
+            Object.assign(empty.style, { fontSize: '13px', lineHeight: '1.7', color: U.sub });
+            listPanel.appendChild(empty);
+            return;
+        }
+        keeps.slice().reverse().forEach(k => {
+            const row = document.createElement('div');
+            Object.assign(row.style, { padding: '9px 0', borderTop: '0.5px solid ' + U.border, cursor: 'pointer' });
+            const q = document.createElement('div');
+            q.textContent = '「' + k.text + '」';
+            Object.assign(q.style, { fontSize: '14px', lineHeight: '1.6', color: U.text });
+            const meta = document.createElement('div');
+            meta.textContent = [k.who, k.when].filter(Boolean).join(' · ');
+            Object.assign(meta.style, { fontSize: '11px', color: U.sub, marginTop: '3px', letterSpacing: '1px' });
+            row.append(q, meta);
+            row.addEventListener('click', () => { hideList(); keepPulse[k.id] = performance.now(); showCard(k); });
+            listPanel.appendChild(row);
+        });
+    }
+    function openList() { detectTheme(); listPanel.style.display = 'block'; renderList(); }
+    function mountMenu() {
+        let tries = 0;
+        const timer = setInterval(() => {
+            const menu = document.getElementById('extensionsMenu');
+            if (menu) {
+                clearInterval(timer);
+                const item = document.createElement('div');
+                item.className = 'list-group-item flex-container flexGap5';
+                item.innerHTML = '<div class="fa-solid fa-star extensionsMenuExtensionButton"></div><span>珍藏的星星</span>';
+                item.addEventListener('click', openList);
+                menu.appendChild(item);
+            } else if (++tries > 60) clearInterval(timer);
+        }, 500);
+    }
+
+    /* ───────── 设置面板（扩展设置里的「✦ 星语」） ───────── */
+    const SLIDERS = [
+        ['brightness', '亮度', 0.3, 1.6, 0.05, v => Math.round(v * 100) + '%'],
+        ['size', '星星大小', 0.6, 1.8, 0.05, v => '×' + (+v).toFixed(2).replace(/\.?0+$/, '')],
+        ['galaxyCount', '首页星系数', 1, 16, 1, v => String(Math.round(v))],
+    ];
+    function mountPanel() {
         const style = document.createElement('style');
         style.textContent = `
-            .cel-body{display:flex;flex-direction:column;gap:6px;padding:6px 2px}
-            .cel-row{display:flex;align-items:center;gap:8px}
-            .cel-name{width:5.5em;flex-shrink:0;opacity:.85}
-            .cel-row input[type=range]{flex:1}
-            .cel-val{width:3.4em;text-align:right;opacity:.7;font-size:.9em}
-            .cel-checks{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;margin-top:2px}
-            .cel-checks label{display:flex;align-items:center;gap:6px;cursor:pointer}
-            .cel-sec{margin-top:6px;padding-top:6px;border-top:1px solid rgba(128,128,128,.25);opacity:.9}
-            .cel-row input[type=number]{width:7em}
-            .cel-btn{cursor:pointer;padding:3px 10px;border:1px solid rgba(128,128,128,.4);border-radius:4px;font-size:.9em;user-select:none}
-            .cel-btn:hover{background:rgba(128,128,128,.15)}
-            .cel-hint{opacity:.55;font-size:.85em}
-            #celestial-float{position:fixed;left:12px;bottom:12px;z-index:10000;width:28px;height:28px;border-radius:50%;
-                background:rgba(10,12,28,.6);color:#cdd6ff;display:flex;align-items:center;justify-content:center;
-                cursor:pointer;font-size:14px;border:1px solid rgba(180,195,240,.25)}
-            #celestial-float-panel{position:fixed;left:12px;bottom:48px;z-index:10000;width:300px;max-width:calc(100vw - 24px);
-                background:rgba(12,14,30,.92);color:#dfe5ff;border:1px solid rgba(180,195,240,.25);border-radius:8px;
-                padding:10px 12px;display:none;font-size:13px}
+            #starlit-words-settings .sw-body{display:flex;flex-direction:column;gap:7px;padding:6px 2px}
+            #starlit-words-settings .sw-row{display:flex;align-items:center;gap:8px}
+            #starlit-words-settings .sw-name{width:5.5em;flex-shrink:0;opacity:.85}
+            #starlit-words-settings input[type=range]{flex:1}
+            #starlit-words-settings .sw-val{width:3.2em;text-align:right;opacity:.7;font-size:.9em}
+            #starlit-words-settings .sw-swatches{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+            #starlit-words-settings .sw-sw{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;border:1px solid rgba(128,128,128,.25);font-size:.92em}
+            #starlit-words-settings .sw-sw.on{border-color:rgba(128,128,128,.7)}
+            #starlit-words-settings .sw-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+            #starlit-words-settings .sw-checks{display:flex;flex-wrap:wrap;gap:6px 16px}
+            #starlit-words-settings .sw-checks label{display:flex;align-items:center;gap:6px;cursor:pointer}
+            #starlit-words-settings .sw-sec{margin-top:6px;padding-top:6px;border-top:1px solid rgba(128,128,128,.25);opacity:.9}
+            #starlit-words-settings .sw-btn{cursor:pointer;padding:3px 10px;border:1px solid rgba(128,128,128,.4);border-radius:4px;font-size:.9em;user-select:none}
+            #starlit-words-settings .sw-btn:hover{background:rgba(128,128,128,.15)}
+            #starlit-words-settings .sw-hint{opacity:.55;font-size:.85em;line-height:1.5}
         `;
         document.head.appendChild(style);
 
-        // 主画布
-        const canvas = document.createElement('canvas');
-        canvas.id = 'celestial-canvas';
-        Object.assign(canvas.style, {
-            position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
-            zIndex: '0', pointerEvents: 'none', display: 'block', mixBlendMode: 'screen',
-        });
-        document.body.appendChild(canvas);
-        const ctx = canvas.getContext('2d');
-
-        // 离屏画布：银河、连线、星座名、方位（2 秒重画一次）
-        const sky = document.createElement('canvas');
-        const skyCtx = sky.getContext('2d');
-
-        // 时间显示
-        const timeEl = document.createElement('div');
-        timeEl.id = 'celestial-time';
-        Object.assign(timeEl.style, {
-            position: 'fixed', bottom: '18px', right: '18px',
-            color: 'rgba(180,195,240,0.30)', fontFamily: 'Courier New, monospace',
-            fontSize: '9px', letterSpacing: '3px', fontStyle: 'italic', pointerEvents: 'none',
-            zIndex: '9999', textAlign: 'right', lineHeight: '1.9', userSelect: 'none', mixBlendMode: 'screen',
-        });
-        document.body.appendChild(timeEl);
-
-        // 星名标签
-        const hoverEl = document.createElement('div');
-        hoverEl.id = 'celestial-hover';
-        Object.assign(hoverEl.style, {
-            position: 'fixed', display: 'none', color: 'rgba(220,230,255,0.90)',
-            fontFamily: 'Courier New, monospace', fontSize: '10px', letterSpacing: '3px',
-            fontStyle: 'italic', pointerEvents: 'none', zIndex: '9999',
-            textShadow: '0 0 8px rgba(180,200,255,0.7)', background: 'rgba(4,4,12,0.65)',
-            padding: '2px 10px', borderRadius: '2px',
-        });
-        document.body.appendChild(hoverEl);
-
-        let W = 0, H = 0, dpr = 1, bgStars = [], starPos = [], idx = {};
-        let running = true, rafId = 0, lastDraw = 0, lastSky = 0;
-        let meteors = [], nextMeteor = 0, panelRoot = null;
-
-        const starR   = mag => Math.max(0.5, 3.2 - mag * 0.50);
-        const starAlp = mag => Math.max(0.22, Math.min(0.96, 1.05 - mag * 0.12));
-        const onScreen = (x, y) => x > -60 && x < W + 60 && y > -60 && y < H + 60;
-
-        // 立体投影：天顶在屏幕中心，北在上、东在左（仰望视角）
-        function proj(alt, az) {
-            const r = Math.cos(R(alt)) / (1 + Math.sin(R(alt)));
-            const s = Math.min(W, H) * 0.5 * S.zoom;
-            return { x: W/2 - s*r*Math.sin(R(az)), y: H/2 - s*r*Math.cos(R(az)), r, s };
-        }
-
-        function rebuildBg() {
-            const n = Math.floor(W * H / 1800 * S.density);
-            bgStars = Array.from({ length: n }, () => ({
-                x: Math.random() * W, y: Math.random() * H,
-                r: Math.random() * 0.9 + 0.15, a: Math.random() * 0.40 + 0.08,
-                tw: Math.random() * Math.PI * 2, spd: rand(0.15, 0.55),
-            }));
-        }
-
-        function resize() {
-            W = window.innerWidth; H = window.innerHeight;
-            dpr = Math.min(window.devicePixelRatio || 1, 2);
-            canvas.width  = sky.width  = Math.round(W * dpr);
-            canvas.height = sky.height = Math.round(H * dpr);
-            rebuildBg();
-            computeSky();
-        }
-
-        function computeSky() {
-            const l = lst(jd(new Date()), LOC.lon);
-            skyCtx.setTransform(1, 0, 0, 1, 0, 0);
-            skyCtx.clearRect(0, 0, sky.width, sky.height);
-            skyCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-            // 星位
-            starPos = STARS.map(s => {
-                const p = altAz(s.ra * 15, s.dec, l, LOC.lat);
-                const q = proj(p.alt, p.az);
-                return { ...s, alt: p.alt, x: q.x, y: q.y, ok: p.alt > -8 && onScreen(q.x, q.y) };
-            });
-            idx = {};
-            starPos.forEach(s => { idx[s.key] = s; });
-
-            // 银河
-            if (S.milkyWay) {
-                skyCtx.globalCompositeOperation = 'lighter';
-                for (const m of MW) {
-                    const p = altAz(m.ra, m.dec, l, LOC.lat);
-                    if (p.alt < -5) continue;
-                    const q = proj(p.alt, p.az);
-                    const size = m.size * q.s * Math.PI / 360 * (1 + q.r * q.r);
-                    if (q.x < -size || q.y < -size || q.x > W + size || q.y > H + size) continue;
-                    const fade = Math.min(1, (p.alt + 5) / 25);
-                    skyCtx.globalAlpha = Math.min(1, m.a * 0.035 * S.milkyStrength * S.brightness * fade);
-                    skyCtx.drawImage(mwSprite, q.x - size/2, q.y - size/2, size, size);
-                }
-                skyCtx.globalAlpha = 1;
-                skyCtx.globalCompositeOperation = 'source-over';
-            }
-
-            // 星座连线
-            if (S.lines) {
-                skyCtx.lineWidth = 0.6;
-                for (const [a, b] of LINES) {
-                    const A = idx[a], B = idx[b];
-                    if (!A || !B || !A.ok || !B.ok) continue;
-                    const fade = Math.min(1, (Math.min(A.alt, B.alt) + 5) / 18);
-                    if (fade <= 0) continue;
-                    skyCtx.strokeStyle = `rgba(185,208,255,${Math.min(1, 0.10 * fade * S.brightness)})`;
-                    skyCtx.beginPath(); skyCtx.moveTo(A.x, A.y); skyCtx.lineTo(B.x, B.y); skyCtx.stroke();
-                }
-            }
-
-            // 星座名
-            if (S.names) {
-                const groups = {};
-                starPos.forEach(s => { if (s.ok && s.alt > 3) (groups[s.con] = groups[s.con] || []).push(s); });
-                skyCtx.font = 'italic 11px "Courier New", monospace';
-                skyCtx.textAlign = 'center';
-                skyCtx.fillStyle = `rgba(190,205,255,${Math.min(1, 0.28 * S.brightness)})`;
-                for (const con in groups) {
-                    const g = groups[con];
-                    if (g.length < 2 || !CON_NAMES[con]) continue;
-                    const x = g.reduce((a, s) => a + s.x, 0) / g.length;
-                    const y = g.reduce((a, s) => a + s.y, 0) / g.length;
-                    skyCtx.fillText(CON_NAMES[con], x, y + 18);
-                }
-            }
-
-            // 方位 + 地平线
-            if (S.compass) {
-                const s = proj(0, 0).s;
-                skyCtx.strokeStyle = `rgba(170,190,240,${Math.min(1, 0.08 * S.brightness)})`;
-                skyCtx.lineWidth = 1;
-                skyCtx.beginPath(); skyCtx.arc(W/2, H/2, s, 0, Math.PI * 2); skyCtx.stroke();
-                skyCtx.font = '12px "Courier New", monospace';
-                skyCtx.textAlign = 'center'; skyCtx.textBaseline = 'middle';
-                skyCtx.fillStyle = `rgba(190,205,255,${Math.min(1, 0.35 * S.brightness)})`;
-                [['北 N', 0], ['东 E', 90], ['南 S', 180], ['西 W', 270]].forEach(([t, az]) => {
-                    const q = proj(0, az);
-                    skyCtx.fillText(t, Math.max(30, Math.min(W - 30, q.x)), Math.max(16, Math.min(H - 16, q.y)));
-                });
-                skyCtx.textBaseline = 'alphabetic';
-            }
-        }
-
-        function newMeteor(t) {
-            const ang = rand(0.15, 0.85) * Math.PI;   // 斜向下
-            const sp = rand(450, 850);
-            return { t0: t, life: rand(600, 1200), x: rand(0.1, 0.9) * W, y: rand(0.02, 0.45) * H,
-                     vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, len: rand(80, 170) };
-        }
-        function drawMeteors(t) {
-            if (!nextMeteor) nextMeteor = t + rand(6000, 20000);
-            if (t > nextMeteor) { meteors.push(newMeteor(t)); nextMeteor = t + rand(15000, 45000); }
-            meteors = meteors.filter(m => t - m.t0 < m.life);
-            ctx.lineWidth = 1.4; ctx.lineCap = 'round';
-            for (const m of meteors) {
-                const age = (t - m.t0) / 1000, p = (t - m.t0) / m.life;
-                const hx = m.x + m.vx * age, hy = m.y + m.vy * age;
-                const sp = Math.hypot(m.vx, m.vy), len = m.len * Math.min(1, p * 3);
-                const tx = hx - m.vx / sp * len, ty = hy - m.vy / sp * len;
-                const a = Math.min(1, Math.sin(Math.PI * p) * 0.85 * S.brightness);
-                const g = ctx.createLinearGradient(hx, hy, tx, ty);
-                g.addColorStop(0, `rgba(240,245,255,${a})`);
-                g.addColorStop(1, 'rgba(200,215,255,0)');
-                ctx.strokeStyle = g;
-                ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(tx, ty); ctx.stroke();
-            }
-        }
-
-        function loop(t) {
-            if (!running) return;
-            rafId = requestAnimationFrame(loop);
-            if (t - lastDraw < 33) return;          // 约 30fps
-            lastDraw = t;
-            if (t - lastSky > 2000) { computeSky(); lastSky = t; }
-
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(sky, 0, 0);
-            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-            const sec = t / 1000;
-
-            // 背景微星（闪烁）
-            ctx.fillStyle = 'rgb(215,222,255)';
-            for (const s of bgStars) {
-                const a = (s.a + Math.sin(s.tw + sec * s.spd) * 0.12) * S.brightness;
-                if (a <= 0) continue;
-                ctx.globalAlpha = Math.min(1, a);
-                ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
-            }
-
-            ctx.globalAlpha = 1;
-
-            // 星点（画法和 v3 一样：小圆点 + 亮星淡光晕）
-            const [cr, cg, cb] = COL.core, [ar, ag, ab] = COL.glowA, [br, bg, bb] = COL.glowB;
-            for (const s of starPos) {
-                if (!s.ok) continue;
-                const fade = Math.min(1, (s.alt + 5) / 20);
-                if (fade <= 0) continue;
-                const r = starR(s.mag);
-                const alp = Math.min(1, starAlp(s.mag) * fade * S.brightness);
-
-                if (s.mag < 2.5) {
-                    const gr = r * 5.5;
-                    const glow = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, gr);
-                    glow.addColorStop(0,   `rgba(${ar},${ag},${ab},${alp * 0.35})`);
-                    glow.addColorStop(0.4, `rgba(${br},${bg},${bb},${alp * 0.12})`);
-                    glow.addColorStop(1,   'rgba(0,0,0,0)');
-                    ctx.beginPath(); ctx.arc(s.x, s.y, gr, 0, Math.PI * 2);
-                    ctx.fillStyle = glow; ctx.fill();
-                }
-                ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-                ctx.fillStyle = `rgba(${cr},${cg},${cb},${alp})`; ctx.fill();
-            }
-
-            if (S.meteors) drawMeteors(t);
-        }
-
-        function updateClock() {
-            if (!S.clock) { timeEl.style.display = 'none'; return; }
-            timeEl.style.display = 'block';
-            const now = new Date();
-            const l = lst(jd(now), LOC.lon);
-            const p2 = n => String(n).padStart(2, '0');
-            const lh = Math.floor(l / 15), lm = Math.floor((l / 15 - lh) * 60);
-            timeEl.innerHTML =
-                `${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}<br>` +
-                `${fmtLoc()}<br>LST ${p2(lh)}h${p2(lm)}m`;
-        }
-
-        function onLocChange() {
-            computeSky(); lastSky = performance.now();
-            updateClock();
-            if (panelRoot) panelRoot.querySelector('.cel-loc').textContent = fmtLoc();
-        }
-        // 让外层的 requestGPS 能调用
-        window.__celestialOnLocChange = onLocChange;
-
-        function applySettings(k) {
-            if (k === 'density' || k === 'all') rebuildBg();
-            if (k === 'warmth'  || k === 'all') buildColors();
-            if (!S.hover) hoverEl.style.display = 'none';
-            updateClock();
-            computeSky(); lastSky = performance.now();
-        }
-
-        /* ───────── 设置面板 ───────── */
-        const SLIDERS = [
-            ['brightness', '亮度', 0.3, 1.6, 0.05],
-            ['warmth', '白 ↔ 黄', 0, 1, 0.05],
-            ['density', '微星数量', 0, 2, 0.1],
-            ['milkyStrength', '银河浓度', 0.2, 2, 0.1],
-            ['zoom', '视野大小', 0.8, 2, 0.05],
-        ];
-        const CHECKS = [
-            ['milkyWay', '银河'], ['lines', '星座连线'], ['meteors', '流星'],
-            ['names', '星座名'], ['compass', '方位'], ['hover', '悬停显示星名'], ['clock', '右下角时间'],
-        ];
-        const fmtVal = (k, v) => (k === 'brightness' || k === 'warmth') ? Math.round(v * 100) + '%'
-                                 : '×' + (+v).toFixed(2).replace(/\.?0+$/, '');
-
-        function panelHTML() {
-            return `<div class="cel-body">
-                ${SLIDERS.map(([k, n, a, b, st]) =>
-                    `<div class="cel-row"><span class="cel-name">${n}</span>
-                     <input type="range" min="${a}" max="${b}" step="${st}" data-k="${k}"><span class="cel-val"></span></div>`).join('')}
-                <div class="cel-checks">
-                    ${CHECKS.map(([k, n]) => `<label><input type="checkbox" data-k="${k}">${n}</label>`).join('')}
+        const wrap = document.createElement('div');
+        wrap.id = 'starlit-words-settings';
+        wrap.innerHTML = `
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>✦ 星语</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
-                <div class="cel-sec">位置：<span class="cel-loc"></span></div>
-                <div class="cel-row">
-                    <input type="number" step="0.1" class="text_pole cel-lat" placeholder="纬度">
-                    <input type="number" step="0.1" class="text_pole cel-lon" placeholder="经度">
-                </div>
-                <div class="cel-hint">南纬、西经填负数。例：东京 35.7 / 139.7</div>
-                <div class="cel-row">
-                    <span class="cel-btn cel-save">保存坐标</span>
-                    <span class="cel-btn cel-gps">重新获取定位</span>
-                </div>
-                <div class="cel-hint cel-status"></div>
-                <div class="cel-row" style="margin-top:4px"><span class="cel-btn cel-reset">恢复默认设置</span></div>
+                <div class="inline-drawer-content"><div class="sw-body">
+                    <div>色系</div>
+                    <div class="sw-swatches">${Object.entries(PALETTES).map(([k, p]) =>
+                        `<div class="sw-sw" data-pal="${k}"><span class="sw-dot" style="background:${rgba(p.star, 1)}"></span><span class="sw-dot" style="background:${rgba(p.keep, 1)}"></span>${p.name}</div>`).join('')}
+                    </div>
+                    ${SLIDERS.map(([k, n, a, b, st]) =>
+                        `<div class="sw-row"><span class="sw-name">${n}</span><input type="range" min="${a}" max="${b}" step="${st}" data-k="${k}"><span class="sw-val"></span></div>`).join('')}
+                    <div class="sw-checks">
+                        <label><input type="checkbox" data-k="rise">新消息升起动画</label>
+                        <label><input type="checkbox" data-k="galaxies">首页显示角色星系</label>
+                    </div>
+                    <div class="sw-sec">星图卷轴</div>
+                    <div class="sw-row">
+                        <span class="sw-name">卷轴底色</span>
+                        <span class="sw-btn" data-paper="night">夜空</span>
+                        <span class="sw-btn" data-paper="paper">宣纸</span>
+                    </div>
+                    <div class="sw-row" style="flex-wrap:wrap">
+                        <span class="sw-btn" data-act="scur">本聊天卷轴</span>
+                        <span class="sw-btn" data-act="sall">全部卷轴</span>
+                    </div>
+                    <div class="sw-sec">其他导出</div>
+                    <div class="sw-row" style="flex-wrap:wrap">
+                        <span class="sw-btn" data-act="cur">本聊天文字（.md）</span>
+                        <span class="sw-btn" data-act="all">全部文字（.md）</span>
+                        <span class="sw-btn" data-act="bak">完整备份</span>
+                    </div>
+                    <div class="sw-hint">「所有珍藏」会收录安装 v2 之后打开过的聊天。</div>
+                </div></div>
             </div>`;
-        }
 
-        function refreshInputs(root) {
-            root.querySelectorAll('[data-k]').forEach(el => {
+        const refresh = () => {
+            wrap.querySelectorAll('.sw-sw').forEach(el => el.classList.toggle('on', el.dataset.pal === S.palette));
+            wrap.querySelectorAll('[data-paper]').forEach(el => {
+                el.style.borderColor = el.dataset.paper === S.paper ? 'rgba(128,128,128,.9)' : '';
+                el.style.fontWeight = el.dataset.paper === S.paper ? '600' : '';
+            });
+            wrap.querySelectorAll('[data-k]').forEach(el => {
                 const k = el.dataset.k;
                 if (el.type === 'checkbox') el.checked = !!S[k];
                 else {
                     el.value = S[k];
-                    const out = el.parentElement.querySelector('.cel-val');
-                    if (out) out.textContent = fmtVal(k, S[k]);
+                    const def = SLIDERS.find(s => s[0] === k);
+                    el.parentElement.querySelector('.sw-val').textContent = def[5](S[k]);
                 }
             });
-            root.querySelector('.cel-loc').textContent = fmtLoc();
-        }
-
-        function bindPanel(root) {
-            panelRoot = root;
-            refreshInputs(root);
-            const status = root.querySelector('.cel-status');
-            const say = m => { status.textContent = m; };
-
-            root.querySelectorAll('[data-k]').forEach(el => {
-                const k = el.dataset.k;
-                el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', () => {
-                    S[k] = el.type === 'checkbox' ? el.checked : parseFloat(el.value);
-                    const out = el.parentElement.querySelector('.cel-val');
-                    if (out) out.textContent = fmtVal(k, S[k]);
-                    saveSettings();
-                    applySettings(k);
-                });
+        };
+        wrap.querySelectorAll('.sw-sw').forEach(el => el.addEventListener('click', () => {
+            S.palette = el.dataset.pal; save(); refresh(); renderList();
+        }));
+        wrap.querySelectorAll('[data-k]').forEach(el => {
+            const k = el.dataset.k;
+            el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', () => {
+                S[k] = el.type === 'checkbox' ? el.checked : parseFloat(el.value);
+                save(); refresh();
+                if (k === 'galaxyCount' || k === 'galaxies') buildGalaxies();
             });
-
-            root.querySelector('.cel-save').addEventListener('click', () => {
-                const lat = parseFloat(root.querySelector('.cel-lat').value);
-                const lon = parseFloat(root.querySelector('.cel-lon').value);
-                if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
-                    say('坐标格式不对：纬度 -90~90，经度 -180~180'); return;
-                }
-                LOC = { lat, lon, src: 'manual' };
-                store.set(LKEY, LOC);
-                onLocChange();
-                say('已保存');
-            });
-            root.querySelector('.cel-gps').addEventListener('click', () => requestGPS(true, say));
-            root.querySelector('.cel-reset').addEventListener('click', () => {
-                Object.assign(S, DEFAULTS); saveSettings();
-                refreshInputs(root); applySettings('all');
-                say('已恢复默认');
-            });
-        }
-
-        function mountFloating() {
-            const btn = document.createElement('div');
-            btn.id = 'celestial-float'; btn.textContent = '✦'; btn.title = '星空背景设置';
-            const panel = document.createElement('div');
-            panel.id = 'celestial-float-panel';
-            panel.innerHTML = `<b>✦ 星空背景</b>${panelHTML()}`;
-            btn.addEventListener('click', () => {
-                panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
-            });
-            document.body.appendChild(btn);
-            document.body.appendChild(panel);
-            bindPanel(panel);
-        }
-
-        function mountPanel() {
-            const wrap = document.createElement('div');
-            wrap.id = 'celestial-settings';
-            wrap.innerHTML = `
-                <div class="inline-drawer">
-                    <div class="inline-drawer-toggle inline-drawer-header">
-                        <b>✦ 星空背景</b>
-                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                    </div>
-                    <div class="inline-drawer-content">${panelHTML()}</div>
-                </div>`;
-            let tries = 0;
-            const timer = setInterval(() => {
-                const host = document.getElementById('extensions_settings2') || document.getElementById('extensions_settings');
-                if (host) { clearInterval(timer); host.appendChild(wrap); bindPanel(wrap); }
-                else if (++tries > 40) { clearInterval(timer); mountFloating(); }   // 20 秒找不到扩展面板
-            }, 500);
-        }
-
-        /* ───────── 鼠标悬停显示星名（和 v3 一样） ───────── */
-        document.addEventListener('mousemove', e => {
-            if (!S.hover) return;
-            let best = null, minD = 44;
-            for (const s of starPos) {
-                if (!s.ok) continue;
-                const d = Math.hypot(s.x - e.clientX, s.y - e.clientY);
-                if (d < minD) { minD = d; best = s; }
-            }
-            if (best) {
-                hoverEl.style.display = 'block';
-                hoverEl.style.left = (best.x + 14) + 'px';
-                hoverEl.style.top  = (best.y - 6) + 'px';
-                hoverEl.textContent = best.name;
-            } else {
-                hoverEl.style.display = 'none';
-            }
-        }, { passive: true });
-
-        /* ───────── 切到后台暂停 ───────── */
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) { running = false; cancelAnimationFrame(rafId); }
-            else if (!running) { running = true; lastSky = 0; rafId = requestAnimationFrame(loop); }
         });
+        wrap.querySelectorAll('[data-paper]').forEach(el => el.addEventListener('click', () => {
+            S.paper = el.dataset.paper; save(); refresh();
+        }));
+        wrap.querySelector('[data-act="scur"]').addEventListener('click', exportScrollCurrent);
+        wrap.querySelector('[data-act="sall"]').addEventListener('click', exportScrollAll);
+        wrap.querySelector('[data-act="cur"]').addEventListener('click', exportCurrent);
+        wrap.querySelector('[data-act="all"]').addEventListener('click', exportAll);
+        wrap.querySelector('[data-act="bak"]').addEventListener('click', exportBackup);
 
-        let resizeTimer = 0;
-        window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 150); });
-
-        // 启动
-        buildColors();
-        resize();
-        updateClock();
-        setInterval(updateClock, 1000);
-        rafId = requestAnimationFrame(loop);
-        mountPanel();
-        if (LOC.src === 'tz') requestGPS(false);
+        let tries = 0;
+        const timer = setInterval(() => {
+            const host = document.getElementById('extensions_settings2') || document.getElementById('extensions_settings');
+            if (host) { clearInterval(timer); host.appendChild(wrap); refresh(); }
+            else if (++tries > 60) clearInterval(timer);
+        }, 500);
+        return refresh;
     }
 
-    function onLocChange() {
-        if (window.__celestialOnLocChange) window.__celestialOnLocChange();
+    /* ───────── 启动 ───────── */
+    function init() {
+        document.body.append(canvas, card, keepBtn, listPanel);
+        resize();
+        window.addEventListener('resize', resize);
+        document.addEventListener('selectionchange', () => { clearTimeout(selTimer); selTimer = setTimeout(checkSelection, 250); });
+        keepBtn.addEventListener('mousedown', e => e.preventDefault());
+        keepBtn.addEventListener('click', e => { e.stopPropagation(); keepPending(); });
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) { running = false; cancelAnimationFrame(rafId); }
+            else if (!running) { running = true; rafId = requestAnimationFrame(loop); }
+        });
+        mountMenu();
+        const refreshPanel = mountPanel();
+
+        let tries = 0;
+        const wait = setInterval(() => {
+            const c = getCtx();
+            if (c && c.eventSource && c.extensionSettings) {
+                clearInterval(wait);
+                const e = store();
+                if (e) S = e.settings;   // 之后改 S 就是改存档里的设置
+                refreshPanel();
+                const ev = c.eventTypes || c.event_types || {};
+                const on = (name, fallback, fn) => c.eventSource.on(ev[name] || fallback, fn);
+                on('CHAT_CHANGED', 'chat_id_changed', () => sync(false));
+                on('MESSAGE_SENT', 'message_sent', () => setTimeout(() => sync(true), 50));
+                on('MESSAGE_RECEIVED', 'message_received', () => setTimeout(() => sync(true), 50));
+                on('MESSAGE_DELETED', 'message_deleted', () => sync(false));
+                on('MESSAGE_SWIPED', 'message_swiped', () => sync(false));
+                on('MESSAGE_EDITED', 'message_edited', () => sync(false));
+                sync(false);
+            } else if (++tries > 120) clearInterval(wait);
+        }, 500);
+
+        rafId = requestAnimationFrame(loop);
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
